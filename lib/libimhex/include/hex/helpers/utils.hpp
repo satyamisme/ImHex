@@ -4,14 +4,15 @@
 
 #include <hex/helpers/concepts.hpp>
 #include <hex/helpers/fs.hpp>
-#include <hex/helpers/intrinsics.hpp>
 
 #include <array>
 #include <bit>
 #include <cstring>
 #include <cctype>
+#include <concepts>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,20 +20,63 @@
 #include <variant>
 #include <vector>
 
-#define TOKEN_CONCAT_IMPL(x, y)    x##y
-#define TOKEN_CONCAT(x, y)         TOKEN_CONCAT_IMPL(x, y)
-#define ANONYMOUS_VARIABLE(prefix) TOKEN_CONCAT(prefix, __COUNTER__)
+#if defined(OS_MACOS)
+    #include <hex/helpers/utils_macos.hpp>
+#elif defined(OS_LINUX)
+    #include <hex/helpers/utils_linux.hpp>
+#endif
 
-struct ImVec2;
+#include <imgui.h>
 
 namespace hex {
 
-    float operator""_scaled(long double value);
-    float operator""_scaled(unsigned long long value);
-    ImVec2 scaled(const ImVec2 &vector);
+    namespace prv {
+        class Provider;
+    }
 
     template<typename T>
-    std::vector<T> operator|(const std::vector<T> &lhs, const std::vector<T> &rhs) {
+    [[nodiscard]] std::vector<std::vector<T>> sampleChannels(const std::vector<T> &data, size_t count, size_t channels) {
+        if (channels == 0) return {};
+        size_t signalLength = std::max(1.0, double(data.size()) / channels);
+
+        size_t stride = std::max(1.0, double(signalLength) / count);
+
+        std::vector<std::vector<T>> result;
+        result.resize(channels);
+        for (size_t i = 0; i < channels; i++) {
+            result[i].reserve(count);
+        }
+        result.reserve(count);
+
+        for (size_t i = 0; i < data.size(); i += stride) {
+            for (size_t j = 0; j < channels; j++) {
+                result[j].push_back(data[i + j]);
+            }
+        }
+
+        return result;
+    }
+
+    template<typename T>
+    [[nodiscard]] std::vector<T> sampleData(const std::vector<T> &data, size_t count) {
+        size_t stride = std::max(1.0, double(data.size()) / count);
+
+        std::vector<T> result;
+        result.reserve(count);
+
+        for (size_t i = 0; i < data.size(); i += stride) {
+            result.push_back(data[i]);
+        }
+
+        return result;
+    }
+
+    [[nodiscard]] float operator""_scaled(long double value);
+    [[nodiscard]] float operator""_scaled(unsigned long long value);
+    [[nodiscard]] ImVec2 scaled(const ImVec2 &vector);
+
+    template<typename T>
+    [[nodiscard]] std::vector<T> operator|(const std::vector<T> &lhs, const std::vector<T> &rhs) {
         std::vector<T> result;
 
         std::copy(lhs.begin(), lhs.end(), std::back_inserter(result));
@@ -41,19 +85,31 @@ namespace hex {
         return result;
     }
 
-    std::string to_string(u128 value);
-    std::string to_string(i128 value);
+    [[nodiscard]] std::string to_string(u128 value);
+    [[nodiscard]] std::string to_string(i128 value);
 
-    std::string toByteString(u64 bytes);
-    std::string makePrintable(u8 c);
+    [[nodiscard]] std::string toLower(std::string string);
+    [[nodiscard]] std::string toUpper(std::string string);
 
-    void runCommand(const std::string &command);
+    [[nodiscard]] std::vector<u8> parseHexString(std::string string);
+    [[nodiscard]] std::optional<u8> parseBinaryString(const std::string &string);
+    [[nodiscard]] std::string toByteString(u64 bytes);
+    [[nodiscard]] std::string makePrintable(u8 c);
+
+    void startProgram(const std::string &command);
+    int executeCommand(const std::string &command);
     void openWebpage(std::string url);
 
-    std::string encodeByteString(const std::vector<u8> &bytes);
-    std::vector<u8> decodeByteString(const std::string &string);
+    extern "C" void registerFont(const char *fontName, const char *fontPath);
+    const std::map<std::fs::path, std::string>& getFonts();
 
-    [[nodiscard]] constexpr inline u64 extract(u8 from, u8 to, const std::unsigned_integral auto &value) {
+    [[nodiscard]] std::string encodeByteString(const std::vector<u8> &bytes);
+    [[nodiscard]] std::vector<u8> decodeByteString(const std::string &string);
+
+    [[nodiscard]] std::wstring utf8ToUtf16(const std::string& utf8);
+    [[nodiscard]] std::string utf16ToUtf8(const std::wstring& utf16);
+
+    [[nodiscard]] constexpr u64 extract(u8 from, u8 to, const std::unsigned_integral auto &value) {
         if (from < to) std::swap(from, to);
 
         using ValueType = std::remove_cvref_t<decltype(value)>;
@@ -77,13 +133,13 @@ namespace hex {
         return (value & mask) >> to;
     }
 
-    constexpr inline i128 signExtend(size_t numBits, i128 value) {
+    [[nodiscard]] constexpr i128 signExtend(size_t numBits, i128 value) {
         i128 mask = 1ULL << (numBits - 1);
         return (value ^ mask) - mask;
     }
 
     template<std::integral T>
-    constexpr inline T swapBitOrder(size_t numBits, T value) {
+    [[nodiscard]] constexpr T swapBitOrder(size_t numBits, T value) {
         T result = 0x00;
 
         for (size_t bit = 0; bit < numBits; bit++) {
@@ -94,19 +150,14 @@ namespace hex {
         return result;
     }
 
-    constexpr inline size_t strnlen(const char *s, size_t n) {
+    [[nodiscard]] constexpr size_t strnlen(const char *s, size_t n) {
         size_t i = 0;
         while (i < n && s[i] != '\x00') i++;
 
         return i;
     }
 
-    template<class... Ts>
-    struct overloaded : Ts... { using Ts::operator()...; };
-    template<class... Ts>
-    overloaded(Ts...) -> overloaded<Ts...>;
-
-    template<size_t Size>
+    template<size_t>
     struct SizeTypeImpl { };
 
     template<>
@@ -124,7 +175,7 @@ namespace hex {
     using SizeType = typename SizeTypeImpl<Size>::Type;
 
     template<typename T>
-    constexpr T changeEndianess(const T &value, size_t size, std::endian endian) {
+    [[nodiscard]] constexpr T changeEndianness(const T &value, size_t size, std::endian endian) {
         if (endian == std::endian::native)
             return value;
 
@@ -144,8 +195,8 @@ namespace hex {
     }
 
     template<typename T>
-    constexpr T changeEndianess(const T &value, std::endian endian) {
-        return changeEndianess(value, sizeof(value), endian);
+    [[nodiscard]] constexpr T changeEndianness(const T &value, std::endian endian) {
+        return changeEndianness(value, sizeof(value), endian);
     }
 
     [[nodiscard]] constexpr u128 bitmask(u8 bits) {
@@ -153,12 +204,12 @@ namespace hex {
     }
 
     template<class T>
-    constexpr T bit_width(T x) noexcept {
+    [[nodiscard]] constexpr T bit_width(T x) noexcept {
         return std::numeric_limits<T>::digits - std::countl_zero(x);
     }
 
     template<typename T>
-    constexpr T bit_ceil(T x) noexcept {
+    [[nodiscard]] constexpr T bit_ceil(T x) noexcept {
         if (x <= 1u)
             return T(1);
 
@@ -166,7 +217,7 @@ namespace hex {
     }
 
     template<std::integral T, std::integral U>
-    auto powi(T base, U exp) {
+    [[nodiscard]] auto powi(T base, U exp) {
         using ResultType = decltype(T{} * U{});
 
         if (exp < 0)
@@ -192,30 +243,22 @@ namespace hex {
     }
 
     template<typename T, typename... Args>
-    std::vector<T> moveToVector(T &&first, Args &&...rest) {
+    [[nodiscard]] std::vector<T> moveToVector(T &&first, Args &&...rest) {
         std::vector<T> result;
         moveToVector(result, T(std::move(first)), std::move(rest)...);
 
         return result;
     }
 
-    std::vector<std::string> splitString(const std::string &string, const std::string &delimiter);
-    std::string combineStrings(const std::vector<std::string> &strings, const std::string &delimiter = "");
-    std::string replaceStrings(std::string string, const std::string &search, const std::string &replace);
+    [[nodiscard]] std::vector<std::string> splitString(const std::string &string, const std::string &delimiter);
+    [[nodiscard]] std::string combineStrings(const std::vector<std::string> &strings, const std::string &delimiter = "");
+    [[nodiscard]] std::string replaceStrings(std::string string, const std::string &search, const std::string &replace);
 
-    std::string toEngineeringString(double value);
+    [[nodiscard]] std::string toEngineeringString(double value);
 
-    template<typename T>
-    std::vector<u8> toBytes(T value) {
-        std::vector<u8> bytes(sizeof(T));
-        std::memcpy(bytes.data(), &value, sizeof(T));
-
-        return bytes;
-    }
-
-    inline std::vector<u8> parseByteString(const std::string &string) {
+    [[nodiscard]] inline std::vector<u8> parseByteString(const std::string &string) {
         auto byteString = std::string(string);
-        byteString.erase(std::remove(byteString.begin(), byteString.end(), ' '), byteString.end());
+        std::erase(byteString, ' ');
 
         if ((byteString.length() % 2) != 0) return {};
 
@@ -230,45 +273,25 @@ namespace hex {
         return result;
     }
 
-    inline std::string toBinaryString(std::unsigned_integral auto number) {
+    [[nodiscard]] std::string toBinaryString(std::unsigned_integral auto number) {
         if (number == 0) return "0";
 
         std::string result;
-        for (i16 bit = hex::bit_width(number) - 1; bit >= 0; bit--)
+        for (i16 bit = hex::bit_width(number) - 1; bit >= 0; bit -= 1)
             result += (number & (0b1 << bit)) == 0 ? '0' : '1';
 
         return result;
     }
 
-    template<typename T>
-    inline void trimLeft(std::basic_string<T> &s) {
-        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
-            return !std::isspace(ch) && ch >= 0x20;
-        }));
-    }
+    [[nodiscard]] float float16ToFloat32(u16 float16);
 
-    template<typename T>
-    inline void trimRight(std::basic_string<T> &s) {
-        s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
-            return !std::isspace(ch) && ch >= 0x20;
-        }).base(), s.end());
-    }
-
-    template<typename T>
-    inline void trim(std::basic_string<T> &s) {
-        trimLeft(s);
-        trimRight(s);
-    }
-
-    float float16ToFloat32(u16 float16);
-
-    inline bool equalsIgnoreCase(const std::string &left, const std::string &right) {
+    [[nodiscard]] inline bool equalsIgnoreCase(std::string_view left, std::string_view right) {
         return std::equal(left.begin(), left.end(), right.begin(), right.end(), [](char a, char b) {
             return tolower(a) == tolower(b);
         });
     }
 
-    inline bool containsIgnoreCase(const std::string &a, const std::string &b) {
+    [[nodiscard]] inline bool containsIgnoreCase(std::string_view a, std::string_view b) {
         auto iter = std::search(a.begin(), a.end(), b.begin(), b.end(), [](char ch1, char ch2) {
             return std::toupper(ch1) == std::toupper(ch2);
         });
@@ -276,15 +299,8 @@ namespace hex {
         return iter != a.end();
     }
 
-    template<typename T> requires requires(T t) { t.u8string(); }
-    std::string toUTF8String(const T &value) {
-        auto result = value.u8string();
-
-        return { result.begin(), result.end() };
-    }
-
     template<typename T, typename... VariantTypes>
-    T get_or(const std::variant<VariantTypes...> &variant, T alt) {
+    [[nodiscard]] T get_or(const std::variant<VariantTypes...> &variant, T alt) {
         const T *value = std::get_if<T>(&variant);
         if (value == nullptr)
             return alt;
@@ -293,108 +309,37 @@ namespace hex {
     }
 
     template<std::integral T>
-    T alignTo(T value, T alignment) {
+    [[nodiscard]] T alignTo(T value, T alignment) {
         T remainder = value % alignment;
 
         return remainder != 0 ? value + (alignment - remainder) : value;
     }
 
-    std::optional<u8> hexCharToValue(char c);
+    [[nodiscard]] std::optional<u8> hexCharToValue(char c);
 
-    bool isProcessElevated();
+    [[nodiscard]] bool isProcessElevated();
 
-    std::optional<std::string> getEnvironmentVariable(const std::string &env);
+    [[nodiscard]] std::optional<std::string> getEnvironmentVariable(const std::string &env);
 
-    inline std::string limitStringLength(const std::string &string, size_t maxLength) {
-        if (string.length() <= maxLength)
-            return string;
+    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength);
 
-        return string.substr(0, maxLength - 3) + "...";
-    }
+    [[nodiscard]] std::optional<std::fs::path> getInitialFilePath();
 
-    namespace scope_guard {
+    [[nodiscard]] std::string generateHexView(u64 offset, u64 size, prv::Provider *provider);
+    [[nodiscard]] std::string generateHexView(u64 offset, const std::vector<u8> &data);
 
-#define SCOPE_GUARD   ::hex::scope_guard::ScopeGuardOnExit() + [&]()
-#define ON_SCOPE_EXIT [[maybe_unused]] auto ANONYMOUS_VARIABLE(SCOPE_EXIT_) = SCOPE_GUARD
+    [[nodiscard]] std::string formatSystemError(i32 error);
 
-        template<class F>
-        class ScopeGuard {
-        private:
-            F m_func;
-            bool m_active;
+    /**
+     * Gets the shared library handle for a given pointer
+     * @param symbol Pointer to any function or variable in the shared library
+     * @return The module handle
+     * @warning Important! Calling this function on functions defined in other modules will return the handle of the current module!
+     *          This is because you're not actually passing a pointer to the function in the other module but rather a pointer to a thunk
+     *          that is defined in the current module.
+     */
+    [[nodiscard]] void* getContainingModule(void* symbol);
 
-        public:
-            explicit constexpr ScopeGuard(F func) : m_func(std::move(func)), m_active(true) { }
-            ~ScopeGuard() {
-                if (this->m_active) { this->m_func(); }
-            }
-            void release() { this->m_active = false; }
-
-            ScopeGuard(ScopeGuard &&other) noexcept : m_func(std::move(other.m_func)), m_active(other.m_active) {
-                other.cancel();
-            }
-
-            ScopeGuard &operator=(ScopeGuard &&) = delete;
-        };
-
-        enum class ScopeGuardOnExit
-        {
-        };
-
-        template<typename F>
-        constexpr ScopeGuard<F> operator+(ScopeGuardOnExit, F &&f) {
-            return ScopeGuard<F>(std::forward<F>(f));
-        }
-
-    }
-
-    namespace first_time_exec {
-
-        #define FIRST_TIME [[maybe_unused]] static auto ANONYMOUS_VARIABLE(FIRST_TIME_) = ::hex::first_time_exec::FirstTimeExecutor() + [&]()
-
-        template<class F>
-        class FirstTimeExecute {
-        public:
-            explicit constexpr FirstTimeExecute(F func) { func(); }
-
-            FirstTimeExecute &operator=(FirstTimeExecute &&) = delete;
-        };
-
-        enum class FirstTimeExecutor
-        {
-        };
-
-        template<typename F>
-        constexpr FirstTimeExecute<F> operator+(FirstTimeExecutor, F &&f) {
-            return FirstTimeExecute<F>(std::forward<F>(f));
-        }
-
-    }
-
-    namespace final_cleanup {
-
-        #define FINAL_CLEANUP [[maybe_unused]] static auto ANONYMOUS_VARIABLE(ON_EXIT_) = ::hex::final_cleanup::FinalCleanupExecutor() + [&]()
-
-        template<class F>
-        class FinalCleanupExecute {
-            F m_func;
-
-        public:
-            explicit constexpr FinalCleanupExecute(F func) : m_func(func) { }
-            constexpr ~FinalCleanupExecute() { this->m_func(); }
-
-            FinalCleanupExecute &operator=(FinalCleanupExecute &&) = delete;
-        };
-
-        enum class FinalCleanupExecutor
-        {
-        };
-
-        template<typename F>
-        constexpr FinalCleanupExecute<F> operator+(FinalCleanupExecutor, F &&f) {
-            return FinalCleanupExecute<F>(std::forward<F>(f));
-        }
-
-    }
+    [[nodiscard]] std::optional<ImColor> blendColors(const std::optional<ImColor> &a, const std::optional<ImColor> &b);
 
 }

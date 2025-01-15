@@ -1,7 +1,8 @@
 #pragma once
 
-#include <hex/helpers/socket.hpp>
 #include <hex/providers/provider.hpp>
+
+#include <wolv/net/socket_client.hpp>
 
 #include <array>
 #include <mutex>
@@ -13,7 +14,7 @@ namespace hex::plugin::builtin {
     class GDBProvider : public hex::prv::Provider {
     public:
         GDBProvider();
-        ~GDBProvider() override = default;;
+        ~GDBProvider() override = default;
 
         [[nodiscard]] bool isAvailable() const override;
         [[nodiscard]] bool isReadable() const override;
@@ -21,18 +22,14 @@ namespace hex::plugin::builtin {
         [[nodiscard]] bool isResizable() const override;
         [[nodiscard]] bool isSavable() const override;
 
-        void read(u64 offset, void *buffer, size_t size, bool overlays) override;
-        void write(u64 offset, const void *buffer, size_t size) override;
-
         void readRaw(u64 offset, void *buffer, size_t size) override;
         void writeRaw(u64 offset, const void *buffer, size_t size) override;
-        [[nodiscard]] size_t getActualSize() const override;
+        [[nodiscard]] u64 getActualSize() const override;
 
         void save() override;
-        void saveAs(const std::fs::path &path) override;
 
         [[nodiscard]] std::string getName() const override;
-        [[nodiscard]] std::vector<std::pair<std::string, std::string>> getDataInformation() const override;
+        [[nodiscard]] std::vector<Description> getDataDescription() const override;
 
         [[nodiscard]] bool open() override;
         void close() override;
@@ -40,26 +37,27 @@ namespace hex::plugin::builtin {
         [[nodiscard]] bool isConnected() const;
 
         [[nodiscard]] bool hasLoadInterface() const override { return true; }
-        void drawLoadInterface() override;
+        bool drawLoadInterface() override;
 
         void loadSettings(const nlohmann::json &settings) override;
         [[nodiscard]] nlohmann::json storeSettings(nlohmann::json settings) const override;
 
-        [[nodiscard]] std::string getTypeName() const override {
+        [[nodiscard]] UnlocalizedString getTypeName() const override {
             return "hex.builtin.provider.gdb";
         }
 
         [[nodiscard]] std::pair<Region, bool> getRegionValidity(u64 address) const override;
+        std::variant<std::string, i128> queryInformation(const std::string &category, const std::string &argument) override;
 
     protected:
-        hex::Socket m_socket;
+        wolv::net::SocketClient m_socket;
 
         std::string m_ipAddress;
         int m_port = 0;
 
         u64 m_size = 0;
 
-        constexpr static size_t CacheLineSize = 0x1000;
+        constexpr static size_t CacheLineSize = 0x10;
 
         struct CacheLine {
             u64 address;
@@ -68,6 +66,7 @@ namespace hex::plugin::builtin {
         };
 
         std::list<CacheLine> m_cache;
+        std::atomic<bool> m_resetCache = false;
 
         std::thread m_cacheUpdateThread;
         std::mutex m_cacheLock;

@@ -1,127 +1,70 @@
 #include <hex/api/project_file_manager.hpp>
 
-#include <hex/helpers/tar.hpp>
-#include <hex/helpers/fmt.hpp>
-#include <hex/helpers/logger.hpp>
+#include <hex/helpers/auto_reset.hpp>
 
-#include <hex/providers/provider.hpp>
+#include <wolv/io/fs.hpp>
 
 namespace hex {
 
-    constexpr static auto MetadataHeaderMagic = "HEX";
-    constexpr static auto MetadataPath = "IMHEX_METADATA";
+    namespace {
 
-    std::vector<ProjectFile::Handler> ProjectFile::s_handlers;
-    std::vector<ProjectFile::ProviderHandler> ProjectFile::s_providerHandlers;
+        AutoReset<std::vector<ProjectFile::Handler>> s_handlers;
+        AutoReset<std::vector<ProjectFile::ProviderHandler>> s_providerHandlers;
 
-    std::fs::path ProjectFile::s_currProjectPath;
+        AutoReset<std::fs::path> s_currProjectPath;
 
-    bool ProjectFile::load(const std::fs::path &filePath) {
-        if (!fs::exists(filePath) || !fs::isRegularFile(filePath))
-            return false;
-        if (filePath.extension() != ".hexproj")
-            return false;
+        AutoReset<std::function<bool(const std::fs::path&)>> s_loadProjectFunction;
+        AutoReset<std::function<bool(std::optional<std::fs::path>, bool)>> s_storeProjectFunction;
 
-        Tar tar(filePath, Tar::Mode::Read);
-        if (!tar.isValid())
-            return false;
-
-        if (!tar.contains(MetadataPath))
-            return false;
-
-        {
-            const auto metadataContent = tar.read(MetadataPath);
-
-            if (!std::string(metadataContent.begin(), metadataContent.end()).starts_with(MetadataHeaderMagic))
-                return false;
-        }
-
-        for (const auto &provider : ImHexApi::Provider::getProviders()) {
-            ImHexApi::Provider::remove(provider);
-        }
-
-        bool result = true;
-        for (const auto &handler : ProjectFile::getHandlers()) {
-            try {
-                if (!handler.load(handler.basePath, tar))
-                    result = false;
-            } catch (std::exception &e) {
-                log::info("{}", e.what());
-                result = false;
-            }
-
-            if (!result && handler.required) {
-                return false;
-            }
-        }
-
-        for (const auto &provider : ImHexApi::Provider::getProviders()) {
-            const auto basePath = std::fs::path(std::to_string(provider->getID()));
-            for (const auto &handler: ProjectFile::getProviderHandlers()) {
-                try {
-                    if (!handler.load(provider, basePath / handler.basePath, tar))
-                        result = false;
-                } catch (std::exception &e) {
-                    log::info("{}", e.what());
-                    result = false;
-                }
-
-                if (!result && handler.required) {
-                    return false;
-                }
-            }
-        }
-
-        ProjectFile::s_currProjectPath = filePath;
-
-        return true;
     }
 
-    bool ProjectFile::store(std::optional<std::fs::path> filePath) {
-        if (!filePath.has_value())
-            filePath = ProjectFile::s_currProjectPath;
 
-        Tar tar(*filePath, Tar::Mode::Create);
-        if (!tar.isValid())
-            return false;
+    void ProjectFile::setProjectFunctions(
+            const std::function<bool(const std::fs::path&)> &loadFun,
+            const std::function<bool(std::optional<std::fs::path>, bool)> &storeFun
+    ) {
+        s_loadProjectFunction = loadFun;
+        s_storeProjectFunction = storeFun;
+    }
 
-        bool result = true;
-        for (const auto &handler : ProjectFile::getHandlers()) {
-            try {
-                if (!handler.store(handler.basePath, tar))
-                    result = false;
-            } catch (std::exception &e) {
-                log::info("{}", e.what());
-                result = false;
-            }
-        }
-        for (const auto &provider : ImHexApi::Provider::getProviders()) {
-            const auto basePath = std::fs::path(std::to_string(provider->getID()));
-            for (const auto &handler: ProjectFile::getProviderHandlers()) {
-                try {
-                    if (!handler.store(provider, basePath / handler.basePath, tar))
-                        result = false;
-                } catch (std::exception &e) {
-                    log::info("{}", e.what());
-                    result = false;
-                }
-            }
-        }
+    bool ProjectFile::load(const std::fs::path &filePath) {
+      return (*s_loadProjectFunction)(filePath);
+    }
 
-        {
-            const auto metadataContent = hex::format("{}\n{}", MetadataHeaderMagic, IMHEX_VERSION);
-            tar.write(MetadataPath, metadataContent);
-        }
-
-        ProjectFile::s_currProjectPath = filePath.value();
-
-        ImHexApi::Provider::resetDirty();
-
-        return result;
+    bool ProjectFile::store(std::optional<std::fs::path> filePath, bool updateLocation) {
+       return (*s_storeProjectFunction)(std::move(filePath), updateLocation);
     }
 
     bool ProjectFile::hasPath() {
-        return !ProjectFile::s_currProjectPath.empty();
+        return !s_currProjectPath->empty();
+    }
+
+    void ProjectFile::clearPath() {
+        s_currProjectPath->clear();
+    }
+
+    std::fs::path ProjectFile::getPath() {
+        return s_currProjectPath;
+    }
+
+    void ProjectFile::setPath(const std::fs::path &path) {
+        s_currProjectPath = path;
+    }
+
+    void ProjectFile::registerHandler(const Handler &handler) {
+        s_handlers->push_back(handler);
+    }
+
+    void ProjectFile::registerPerProviderHandler(const ProviderHandler &handler) {
+        s_providerHandlers->push_back(handler);
+    }
+
+    const std::vector<ProjectFile::Handler>& ProjectFile::getHandlers() {
+        return s_handlers;
+    }
+
+    const std::vector<ProjectFile::ProviderHandler>& ProjectFile::getProviderHandlers() {
+        return s_providerHandlers;
     }
 
 }

@@ -8,18 +8,24 @@ fi
 
 apt install -y \
   build-essential       \
-  gcc-12                \
-  g++-12                \
+  gcc-14                \
+  g++-14                \
   lld                   \
   ${PKGCONF:-}          \
   cmake                 \
-  make                  \
   ccache                \
   libglfw3-dev          \
   libglm-dev            \
   libmagic-dev          \
   libmbedtls-dev        \
-  python3-dev           \
+  libfontconfig-dev     \
   libfreetype-dev       \
   libdbus-1-dev         \
-  xdg-desktop-portal
+  libcurl4-gnutls-dev   \
+  libgtk-3-dev          \
+  ninja-build           \
+  zlib1g-dev            \
+  libbz2-dev            \
+  liblzma-dev           \
+  libzstd-dev           \
+  liblz4-dev

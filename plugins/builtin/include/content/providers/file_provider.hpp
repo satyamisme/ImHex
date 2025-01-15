@@ -2,25 +2,17 @@
 
 #include <hex/providers/provider.hpp>
 
+#include <wolv/io/file.hpp>
+
+#include <set>
 #include <string_view>
-
-#include <sys/stat.h>
-
-#if defined(OS_WINDOWS)
-    #define WIN32_LEAN_AND_MEAN
-    #include <windows.h>
-#else
-    #include <sys/mman.h>
-    #include <unistd.h>
-    #include <sys/fcntl.h>
-#endif
 
 namespace hex::plugin::builtin {
 
     class FileProvider : public hex::prv::Provider {
     public:
-        FileProvider() = default;;
-        ~FileProvider() override = default;;
+        FileProvider() = default;
+        ~FileProvider() override = default;
 
         [[nodiscard]] bool isAvailable() const override;
         [[nodiscard]] bool isReadable() const override;
@@ -28,25 +20,24 @@ namespace hex::plugin::builtin {
         [[nodiscard]] bool isResizable() const override;
         [[nodiscard]] bool isSavable() const override;
 
-        void read(u64 offset, void *buffer, size_t size, bool overlays) override;
-        void write(u64 offset, const void *buffer, size_t size) override;
-
-        void resize(size_t newSize) override;
-        void insert(u64 offset, size_t size) override;
-        void remove(u64 offset, size_t size) override;
+        void resizeRaw(u64 newSize) override;
 
         void readRaw(u64 offset, void *buffer, size_t size) override;
         void writeRaw(u64 offset, const void *buffer, size_t size) override;
-        [[nodiscard]] size_t getActualSize() const override;
+
+        [[nodiscard]] u64 getActualSize() const override;
 
         void save() override;
         void saveAs(const std::fs::path &path) override;
 
         [[nodiscard]] std::string getName() const override;
-        [[nodiscard]] std::vector<std::pair<std::string, std::string>> getDataInformation() const override;
+        [[nodiscard]] std::vector<Description> getDataDescription() const override;
+        std::variant<std::string, i128> queryInformation(const std::string &category, const std::string &argument) override;
 
         [[nodiscard]] bool hasFilePicker() const override { return true; }
         [[nodiscard]] bool handleFilePicker() override;
+
+        std::vector<MenuEntry> getMenuEntries() override;
 
         void setPath(const std::fs::path &path);
 
@@ -56,22 +47,36 @@ namespace hex::plugin::builtin {
         void loadSettings(const nlohmann::json &settings) override;
         [[nodiscard]] nlohmann::json storeSettings(nlohmann::json settings) const override;
 
-        [[nodiscard]] std::string getTypeName() const override {
+        [[nodiscard]] UnlocalizedString getTypeName() const override {
             return "hex.builtin.provider.file";
         }
 
-        std::pair<Region, bool> getRegionValidity(u64 address) const override;
+        [[nodiscard]] std::pair<Region, bool> getRegionValidity(u64 address) const override;
+
+    private:
+        void convertToMemoryFile();
+        void convertToDirectAccess();
+
+        void handleFileChange();
+
+        bool open(bool memoryMapped);
 
     protected:
         std::fs::path m_path;
-        void *m_mappedFile = nullptr;
-        size_t m_fileSize  = 0;
+        wolv::io::File m_file;
+        size_t m_fileSize = 0;
 
-        struct stat m_fileStats = { };
-        bool m_fileStatsValid   = false;
-        bool m_emptyFile        = false;
+        wolv::io::ChangeTracker m_changeTracker;
+        std::vector<u8> m_data;
+        bool m_loadedIntoMemory = false;
+        bool m_ignoreNextChangeEvent = false;
+        bool m_changeEventAcknowledgementPending = false;
+
+        std::optional<struct stat> m_fileStats;
 
         bool m_readable = false, m_writable = false;
+
+        static std::set<FileProvider*> s_openedFiles;
     };
 
 }

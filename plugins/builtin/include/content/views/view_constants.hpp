@@ -2,7 +2,6 @@
 
 #include <hex/ui/view.hpp>
 
-#include <cstdio>
 #include <string>
 
 namespace hex::plugin::builtin {
@@ -21,7 +20,7 @@ namespace hex::plugin::builtin {
         std::string value;
     };
 
-    class ViewConstants : public View {
+    class ViewConstants : public View::Window {
     public:
         explicit ViewConstants();
         ~ViewConstants() override = default;

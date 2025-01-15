@@ -1,71 +1,46 @@
 #include <hex/api/content_registry.hpp>
-#include <hex/providers/provider.hpp>
 
 #include <imgui.h>
 #include <hex/ui/imgui_imhex_extensions.h>
-#include <hex/helpers/logger.hpp>
+
 #include <hex/helpers/utils.hpp>
 
+#include <wolv/utils/string.hpp>
+
+
 namespace hex::plugin::builtin {
-
-    template<typename T>
-    constexpr ImGuiDataType getImGuiDataType() {
-        if constexpr      (std::same_as<T, u8>)     return ImGuiDataType_U8;
-        else if constexpr (std::same_as<T, u16>)    return ImGuiDataType_U16;
-        else if constexpr (std::same_as<T, u32>)    return ImGuiDataType_U32;
-        else if constexpr (std::same_as<T, u64>)    return ImGuiDataType_U64;
-        else if constexpr (std::same_as<T, i8>)     return ImGuiDataType_S8;
-        else if constexpr (std::same_as<T, i16>)    return ImGuiDataType_S16;
-        else if constexpr (std::same_as<T, i32>)    return ImGuiDataType_S32;
-        else if constexpr (std::same_as<T, i64>)    return ImGuiDataType_S64;
-        else if constexpr (std::same_as<T, float>)  return ImGuiDataType_Float;
-        else if constexpr (std::same_as<T, double>) return ImGuiDataType_Double;
-        else static_assert(hex::always_false<T>::value, "Invalid data type!");
-    }
-
-    template<typename T>
-    constexpr const char *getFormatLengthSpecifier() {
-        if constexpr      (std::same_as<T, u8>)     return "hh";
-        else if constexpr (std::same_as<T, u16>)    return "h";
-        else if constexpr (std::same_as<T, u32>)    return "l";
-        else if constexpr (std::same_as<T, u64>)    return "ll";
-        else if constexpr (std::same_as<T, i8>)     return "hh";
-        else if constexpr (std::same_as<T, i16>)    return "h";
-        else if constexpr (std::same_as<T, i32>)    return "l";
-        else if constexpr (std::same_as<T, i64>)    return "ll";
-        else static_assert(hex::always_false<T>::value, "Invalid data type!");
-    }
 
     template<std::integral T>
     class DataVisualizerHexadecimal : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerHexadecimal() : DataVisualizer(ByteCount, CharCount) { }
+        explicit DataVisualizerHexadecimal(const std::string &name) : DataVisualizer(name, ByteCount, CharCount) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address);
+            std::ignore = address;
 
             if (size == ByteCount)
-                ImGui::Text(getFormatString(upperCase), *reinterpret_cast<const T*>(data));
+                ImGuiExt::TextFormatted(upperCase ? "{:0{}X}" : "{:0{}x}", *reinterpret_cast<const T*>(data), sizeof(T) * 2);
             else
-                ImGui::TextFormatted("{: {}s}", CharCount);
+                ImGuiExt::TextFormatted("{: {}s}", CharCount);
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, startedEditing);
+            std::ignore = address;
+            std::ignore = startedEditing;
 
             if (size == ByteCount) {
-                return drawDefaultEditingTextBox(address, getFormatString(upperCase), getImGuiDataType<T>(), data, ImGuiInputTextFlags_CharsHexadecimal);
-            }
-            else
+                return drawDefaultScalarEditingTextBox(address, getFormatString(upperCase), ImGuiExt::getImGuiDataType<T>(), data, ImGuiInputTextFlags_CharsHexadecimal);
+            } else {
                 return false;
+            }
         }
 
     private:
-        constexpr static inline auto ByteCount = sizeof(T);
-        constexpr static inline auto CharCount = ByteCount * 2;
+        constexpr static auto ByteCount = sizeof(T);
+        constexpr static auto CharCount = ByteCount * 2;
 
-        const static inline auto FormattingUpperCase = hex::format("%0{}{}X", CharCount, getFormatLengthSpecifier<T>());
-        const static inline auto FormattingLowerCase = hex::format("%0{}{}x", CharCount, getFormatLengthSpecifier<T>());
+        const static inline auto FormattingUpperCase = hex::format("%0{}{}X", CharCount, ImGuiExt::getFormatLengthSpecifier<T>());
+        const static inline auto FormattingLowerCase = hex::format("%0{}{}x", CharCount, ImGuiExt::getFormatLengthSpecifier<T>());
 
         const char *getFormatString(bool upperCase) {
             if (upperCase)
@@ -77,48 +52,49 @@ namespace hex::plugin::builtin {
 
     class DataVisualizerHexii : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerHexii() : DataVisualizer(ByteCount, CharCount) { }
+        DataVisualizerHexii() : DataVisualizer("hex.builtin.visualizer.hexii", ByteCount, CharCount) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address);
+            std::ignore = address;
 
             if (size == ByteCount) {
                 const u8 c = data[0];
                 switch (c) {
                     case 0x00:
-                        ImGui::Text("  ");
+                        ImGui::TextUnformatted("  ");
                         break;
                     case 0xFF:
-                        ImGui::TextDisabled("##");
-                        break;
-                    case ' ' ... '~':
-                        ImGui::Text(".%c", c);
+                        ImGuiExt::TextFormattedDisabled("##");
                         break;
                     default:
-                        ImGui::Text(getFormatString(upperCase), c);
+                        if (c >= ' ' && c <= '~')
+                            ImGuiExt::TextFormatted(".{:c}", char(c));
+                        else
+                            ImGui::Text(getFormatString(upperCase), c);
                         break;
                 }
+            } else {
+                ImGuiExt::TextFormatted("{: {}s}", CharCount);
             }
-            else
-                ImGui::TextFormatted("{: {}s}", CharCount);
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, startedEditing);
+            std::ignore = address;
+            std::ignore = startedEditing;
 
             if (size == ByteCount) {
-                return drawDefaultEditingTextBox(address, getFormatString(upperCase), getImGuiDataType<u8>(), data, ImGuiInputTextFlags_CharsHexadecimal);
-            }
-            else
+                return drawDefaultScalarEditingTextBox(address, getFormatString(upperCase), ImGuiExt::getImGuiDataType<u8>(), data, ImGuiInputTextFlags_CharsHexadecimal);
+            } else {
                 return false;
+            }
         }
 
     private:
         constexpr static inline auto ByteCount = 1;
         constexpr static inline auto CharCount = ByteCount * 2;
 
-        const static inline auto FormattingUpperCase = hex::format("%0{}{}X", CharCount, getFormatLengthSpecifier<u8>());
-        const static inline auto FormattingLowerCase = hex::format("%0{}{}x", CharCount, getFormatLengthSpecifier<u8>());
+        const static inline auto FormattingUpperCase = hex::format("%0{}{}X", CharCount, ImGuiExt::getFormatLengthSpecifier<u8>());
+        const static inline auto FormattingLowerCase = hex::format("%0{}{}x", CharCount, ImGuiExt::getFormatLengthSpecifier<u8>());
 
         static const char *getFormatString(bool upperCase) {
             if (upperCase)
@@ -131,43 +107,39 @@ namespace hex::plugin::builtin {
     template<std::integral T>
     class DataVisualizerDecimal : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerDecimal() : DataVisualizer(ByteCount, CharCount) { }
+        explicit DataVisualizerDecimal(const std::string &name) : DataVisualizer(name, ByteCount, CharCount) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address, upperCase);
+            std::ignore = address;
+            std::ignore = upperCase;
 
             if (size == ByteCount) {
-                if (std::is_signed<T>::value)
+                if (std::is_signed_v<T>)
                     ImGui::Text(getFormatString(), static_cast<i64>(*reinterpret_cast<const T*>(data)));
                 else
                     ImGui::Text(getFormatString(), static_cast<u64>(*reinterpret_cast<const T*>(data)));
+            } else {
+                ImGuiExt::TextFormatted("{: {}s}", CharCount);
             }
-            else
-                ImGui::TextFormatted("{: {}s}", CharCount);
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, upperCase, startedEditing);
+            std::ignore = address;
+            std::ignore = upperCase;
+            std::ignore = startedEditing;
 
             if (size == ByteCount) {
-                return ImGui::InputScalar(
-                           "##hex_input",
-                           getImGuiDataType<T>(),
-                           data,
-                           nullptr,
-                           nullptr,
-                           nullptr,
-                           DataVisualizer::TextInputFlags);
-            }
-            else
+                return drawDefaultScalarEditingTextBox(address, FormatString.c_str(), ImGuiExt::getImGuiDataType<T>(), data, ImGuiInputTextFlags_None);
+            } else {
                 return false;
+            }
         }
 
     private:
-        constexpr static inline auto ByteCount = sizeof(T);
-        constexpr static inline auto CharCount = std::numeric_limits<T>::digits10 + 2;
+        constexpr static auto ByteCount = sizeof(T);
+        constexpr static auto CharCount = std::numeric_limits<T>::digits10 + 2;
 
-        const static inline auto FormatString = hex::format("%{}{}{}", CharCount, getFormatLengthSpecifier<T>(), std::is_signed<T>::value ? "d" : "u");
+        const static inline auto FormatString = hex::format("%{}{}{}", CharCount, ImGuiExt::getFormatLengthSpecifier<T>(), std::is_signed_v<T> ? "d" : "u");
 
         const char *getFormatString() {
             return FormatString.c_str();
@@ -179,32 +151,27 @@ namespace hex::plugin::builtin {
     template<typename T>
     class DataVisualizerFloatingPoint : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerFloatingPoint() : DataVisualizer(ByteCount, CharCount) { }
+        explicit DataVisualizerFloatingPoint(const std::string &name) : DataVisualizer(name, ByteCount, CharCount) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address);
+            std::ignore = address;
 
             if (size == ByteCount)
                 ImGui::Text(getFormatString(upperCase), *reinterpret_cast<const T*>(data));
             else
-                ImGui::TextFormatted("{: {}s}", CharCount);
+                ImGuiExt::TextFormatted("{: {}s}", CharCount);
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, upperCase, startedEditing);
+            std::ignore = address;
+            std::ignore = upperCase;
+            std::ignore = startedEditing;
 
             if (size == ByteCount) {
-                return ImGui::InputScalar(
-                           "##hex_input",
-                           getImGuiDataType<T>(),
-                           data,
-                           nullptr,
-                           nullptr,
-                           nullptr,
-                           DataVisualizer::TextInputFlags | ImGuiInputTextFlags_CharsScientific);
-            }
-            else
+                return drawDefaultScalarEditingTextBox(address, getFormatString(upperCase), ImGuiExt::getImGuiDataType<T>(), data, ImGuiInputTextFlags_CharsScientific);
+            } else {
                 return false;
+            }
         }
 
     private:
@@ -214,7 +181,7 @@ namespace hex::plugin::builtin {
         const static inline auto FormatStringUpperCase = hex::format("%{}G", CharCount);
         const static inline auto FormatStringLowerCase = hex::format("%{}g", CharCount);
 
-        const char *getFormatString(bool upperCase) {
+        const char *getFormatString(bool upperCase) const {
             if (upperCase)
                 return FormatStringUpperCase.c_str();
             else
@@ -225,27 +192,27 @@ namespace hex::plugin::builtin {
     template<>
     class DataVisualizerFloatingPoint<Float16> : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerFloatingPoint() : DataVisualizer(ByteCount, CharCount) { }
+        explicit DataVisualizerFloatingPoint(const std::string &name) : DataVisualizer(name, ByteCount, CharCount) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address);
+            std::ignore = address;
 
             if (size == ByteCount)
                 ImGui::Text(getFormatString(upperCase), hex::float16ToFloat32(*reinterpret_cast<const u16*>(data)));
             else
-                ImGui::TextFormatted("{: {}s}", CharCount);
+                ImGuiExt::TextFormatted("{: {}s}", CharCount);
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(startedEditing);
+            std::ignore = startedEditing;
 
             this->draw(address, data, size, upperCase);
             return false;
         }
 
     private:
-        constexpr static inline auto ByteCount = sizeof(Float16);
-        constexpr static inline auto CharCount = 14;
+        constexpr static auto ByteCount = sizeof(Float16);
+        constexpr static auto CharCount = 14;
 
         const static inline auto FormatStringUpperCase = hex::format("%{}G", CharCount);
         const static inline auto FormatStringLowerCase = hex::format("%{}g", CharCount);
@@ -260,10 +227,11 @@ namespace hex::plugin::builtin {
 
     class DataVisualizerRGBA8 : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
-        DataVisualizerRGBA8() : DataVisualizer(4, 2) { }
+        DataVisualizerRGBA8() : DataVisualizer("hex.builtin.visualizer.rgba8", 4, 2) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address, upperCase);
+            std::ignore = address;
+            std::ignore = upperCase;
 
             if (size == 4)
                 ImGui::ColorButton("##color", ImColor(data[0], data[1], data[2], data[3]), ImGuiColorEditFlags_AlphaPreview | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetColumnWidth(), ImGui::GetTextLineHeight()));
@@ -272,19 +240,22 @@ namespace hex::plugin::builtin {
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, data, size, upperCase);
+            std::ignore = address;
+            std::ignore = data;
+            std::ignore = size;
+            std::ignore = upperCase;
 
+            m_currColor = { float(data[0]) / 0xFF, float(data[1]) / 0xFF, float(data[2]) / 0xFF, float(data[3]) / 0xFF };
             if (startedEditing) {
-                this->m_currColor = { float(data[0]) / 0xFF, float(data[1]) / 0xFF, float(data[2]) / 0xFF, float(data[3]) / 0xFF };
                 ImGui::OpenPopup("##color_popup");
             }
 
-            ImGui::ColorButton("##color", ImColor(this->m_currColor[0], this->m_currColor[1], this->m_currColor[2], this->m_currColor[3]), ImGuiColorEditFlags_AlphaPreview | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetColumnWidth(), ImGui::GetTextLineHeight()));
+            ImGui::ColorButton("##color", ImColor(m_currColor[0], m_currColor[1], m_currColor[2], m_currColor[3]), ImGuiColorEditFlags_AlphaPreview | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetColumnWidth(), ImGui::GetTextLineHeight()));
 
             if (ImGui::BeginPopup("##color_popup")) {
-                if (ImGui::ColorPicker4("##picker", this->m_currColor.data(), ImGuiColorEditFlags_AlphaBar)) {
+                if (ImGui::ColorPicker4("##picker", m_currColor.data(), ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_InputRGB)) {
                     for (u8 i = 0; i < 4; i++)
-                        data[i] = this->m_currColor[i] * 0xFF;
+                        data[i] = m_currColor[i] * 0xFF;
                 }
                 ImGui::EndPopup();
             } else {
@@ -294,8 +265,41 @@ namespace hex::plugin::builtin {
             return false;
         }
 
-        std::array<float, 4> m_currColor = { 0 };
+    private:
+        std::array<float, 4> m_currColor = { };
+    };
 
+    class DataVisualizerBinary : public hex::ContentRegistry::HexEditor::DataVisualizer {
+    public:
+        DataVisualizerBinary() : DataVisualizer("hex.builtin.visualizer.binary", 1, 8) { }
+
+        void draw(u64 address, const u8 *data, size_t size, bool) override {
+            std::ignore = address;
+
+            if (size == 1)
+                ImGuiExt::TextFormatted("{:08b}", *data);
+        }
+
+        bool drawEditing(u64 address, u8 *data, size_t, bool, bool startedEditing) override {
+            std::ignore = address;
+            std::ignore = startedEditing;
+
+            if (startedEditing) {
+                m_inputBuffer = hex::format("{:08b}", *data);
+            }
+
+            if (drawDefaultTextEditingTextBox(address, m_inputBuffer, ImGuiInputTextFlags_None)) {
+                if (auto result = hex::parseBinaryString(wolv::util::trim(m_inputBuffer)); result.has_value()) {
+                    *data = result.value();
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+    private:
+        std::string m_inputBuffer;
     };
 
     void registerDataVisualizers() {
@@ -318,8 +322,10 @@ namespace hex::plugin::builtin {
         ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerFloatingPoint<float>>("hex.builtin.visualizer.floating_point.32bit");
         ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerFloatingPoint<double>>("hex.builtin.visualizer.floating_point.64bit");
 
-        ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerRGBA8>("hex.builtin.visualizer.rgba8");
-        ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerHexii>("hex.builtin.visualizer.hexii");
+        ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerRGBA8>();
+        ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerHexii>();
+
+        ContentRegistry::HexEditor::addDataVisualizer<DataVisualizerBinary>();
     }
 
 }

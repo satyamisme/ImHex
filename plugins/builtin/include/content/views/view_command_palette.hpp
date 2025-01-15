@@ -1,29 +1,28 @@
 #pragma once
 
-#include <hex.hpp>
 #include <hex/ui/view.hpp>
 
 #include <imgui.h>
 
 #include <vector>
-#include <tuple>
-#include <cstdio>
+#include <hex/api/content_registry.hpp>
 
 namespace hex::plugin::builtin {
 
-    class ViewCommandPalette : public View {
+    class ViewCommandPalette : public View::Special {
     public:
         ViewCommandPalette();
         ~ViewCommandPalette() override = default;
 
-        void drawContent() override;
+        void drawContent() override {}
+        void drawAlwaysVisibleContent() override;
 
-        [[nodiscard]] bool isAvailable() const override { return true; }
+        [[nodiscard]] bool shouldDraw() const override { return false; }
         [[nodiscard]] bool shouldProcess() const override { return true; }
 
         [[nodiscard]] bool hasViewMenuItemEntry() const override { return false; }
-        [[nodiscard]] ImVec2 getMinSize() const override { return { 400, 100 }; }
-        [[nodiscard]] ImVec2 getMaxSize() const override { return { 400, 100 }; }
+        [[nodiscard]] ImVec2 getMinSize() const override { return ImVec2(std::min(ImHexApi::System::getMainWindowSize().x, 600_scaled), 150_scaled); }
+        [[nodiscard]] ImVec2 getMaxSize() const override { return this->getMinSize(); }
 
     private:
         enum class MatchType
@@ -37,22 +36,23 @@ namespace hex::plugin::builtin {
         struct CommandResult {
             std::string displayResult;
             std::string matchedCommand;
-            std::function<void(std::string)> executeCallback;
+            ContentRegistry::CommandPaletteCommands::impl::ExecuteCallback executeCallback;
         };
 
         bool m_commandPaletteOpen = false;
         bool m_justOpened         = false;
         bool m_focusInputTextBox  = false;
+        bool m_moveCursorToEnd    = false;
 
-        std::vector<char> m_commandBuffer;
+        std::string m_commandBuffer;
         std::vector<CommandResult> m_lastResults;
         std::string m_exactResult;
 
         void focusInputTextBox() {
-            this->m_focusInputTextBox = true;
+            m_focusInputTextBox = true;
         }
 
-        std::vector<CommandResult> getCommandResults(const std::string &command);
+        std::vector<CommandResult> getCommandResults(const std::string &input);
     };
 
 }

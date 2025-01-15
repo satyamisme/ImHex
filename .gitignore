@@ -1,14 +1,16 @@
 .vscode/
 .idea/
+.kdev4/
 
 cmake-build-*/
-
-build-linux/
 build*/
+local/
+venv/
+.cache/
 
 *.mgc
+*.kdev4
 imgui.ini
 .DS_Store
-plugins/.rustc_info.json
-
-**/target
+CMakeUserPresets.json
+Brewfile.lock.json

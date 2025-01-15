@@ -1,94 +1,160 @@
 #include "content/views/view_settings.hpp"
 
 #include <hex/api/content_registry.hpp>
-
 #include <hex/helpers/logger.hpp>
 
 #include <nlohmann/json.hpp>
 
+#include <popups/popup_question.hpp>
+#include <fonts/vscode_icons.hpp>
+
 namespace hex::plugin::builtin {
 
-    ViewSettings::ViewSettings() : View("hex.builtin.view.settings.name") {
-        EventManager::subscribe<RequestOpenWindow>(this, [this](const std::string &name) {
+    ViewSettings::ViewSettings() : View::Modal("hex.builtin.view.settings.name") {
+        // Handle window open requests
+        RequestOpenWindow::subscribe(this, [this](const std::string &name) {
             if (name == "Settings") {
                 TaskManager::doLater([this] {
-                    ImGui::OpenPopup(View::toWindowName("hex.builtin.view.settings.name").c_str());
                     this->getWindowOpenState() = true;
                 });
             }
         });
 
-        ContentRegistry::Interface::addMenuItem("hex.builtin.menu.help", 2000, [&, this] {
-            if (ImGui::MenuItem("hex.builtin.view.settings.name"_lang)) {
-                TaskManager::doLater([] { ImGui::OpenPopup(View::toWindowName("hex.builtin.view.settings.name").c_str()); });
-                this->getWindowOpenState() = true;
+        // Add the settings menu item to the Extras menu
+        ContentRegistry::Interface::addMenuItemSeparator({ "hex.builtin.menu.extras" }, 3000);
+        ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.extras", "hex.builtin.view.settings.name" }, ICON_VS_SETTINGS_GEAR, 4000, Shortcut::None, [&, this] {
+            this->getWindowOpenState() = true;
+        });
+
+        EventImHexStartupFinished::subscribe(this, []{
+            for (const auto &[unlocalizedCategory, unlocalizedDescription, subCategories] : ContentRegistry::Settings::impl::getSettings()) {
+                for (const auto &[unlocalizedSubCategory, entries] : subCategories) {
+                    for (const auto &[unlocalizedName, widget] : entries) {
+                        try {
+                            auto defaultValue = widget->store();
+                            widget->load(ContentRegistry::Settings::impl::getSetting(unlocalizedCategory, unlocalizedName, defaultValue));
+                            widget->onChanged();
+                        } catch (const std::exception &e) {
+                            log::error("Failed to load setting [{} / {}]: {}", unlocalizedCategory.get(), unlocalizedName.get(), e.what());
+                        }
+                    }
+                }
             }
         });
     }
 
     ViewSettings::~ViewSettings() {
-        EventManager::unsubscribe<RequestOpenWindow>(this);
+        RequestOpenWindow::unsubscribe(this);
+        EventImHexStartupFinished::unsubscribe(this);
     }
 
     void ViewSettings::drawContent() {
+        if (ImGui::BeginTable("Settings", 2, ImGuiTableFlags_BordersInner)) {
+            ImGui::TableSetupColumn("##category", ImGuiTableColumnFlags_WidthFixed, 120_scaled);
+            ImGui::TableSetupColumn("##settings", ImGuiTableColumnFlags_WidthStretch);
 
-        if (ImGui::BeginPopupModal(View::toWindowName("hex.builtin.view.settings.name").c_str(), &this->getWindowOpenState(), ImGuiWindowFlags_NoResize)) {
-            if (ImGui::BeginTabBar("settings")) {
-                auto &entries = ContentRegistry::Settings::getEntries();
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
 
-                std::vector<std::decay_t<decltype(entries)>::const_iterator> sortedCategories;
+            {
+                auto &categories = ContentRegistry::Settings::impl::getSettings();
 
-                for (auto it = entries.cbegin(); it != entries.cend(); it++) {
-                    sortedCategories.emplace_back(it);
+                // Draw all categories
+                bool categorySet = false;
+                for (auto &category : categories) {
+                    // Skip empty categories
+                    if (category.subCategories.empty())
+                        continue;
+
+                    if (ImGui::Selectable(Lang(category.unlocalizedName), m_selectedCategory == &category, ImGuiSelectableFlags_NoAutoClosePopups) || m_selectedCategory == nullptr)
+                        m_selectedCategory = &category;
+
+                    if (m_selectedCategory == &category)
+                        categorySet = true;
                 }
 
-                std::sort(sortedCategories.begin(), sortedCategories.end(), [](auto &item0, auto &item1) {
-                    return item0->first.slot < item1->first.slot;
-                });
+                if (!categorySet)
+                    m_selectedCategory = nullptr;
+            }
 
-                const auto &descriptions = ContentRegistry::Settings::getCategoryDescriptions();
+            ImGui::TableNextColumn();
 
-                for (auto &it : sortedCategories) {
-                    auto &[category, settings] = *it;
-                    if (ImGui::BeginTabItem(LangEntry(category.name))) {
-                        const std::string &categoryDesc = descriptions.contains(category.name) ? descriptions.at(category.name) : category.name;
+            if (m_selectedCategory != nullptr) {
+                auto &category = *m_selectedCategory;
 
-                        LangEntry descriptionEntry{categoryDesc};
-                        ImGui::TextFormattedWrapped("{}", descriptionEntry);
-                        ImGui::InfoTooltip(descriptionEntry);
-                        ImGui::Separator();
+                if (ImGui::BeginChild("scrolling")) {
 
-                        for (auto &[name, requiresRestart, callback] : settings) {
-                            auto &setting = ContentRegistry::Settings::getSettingsData()[category.name][name];
-                            if (callback(LangEntry(name), setting)) {
-                                log::debug("Setting [{}]: {} was changed to {}", category.name, name, [&] -> std::string{
-                                   if (setting.is_number())
-                                       return std::to_string(setting.get<int>());
-                                   else if (setting.is_string())
-                                       return setting.get<std::string>();
-                                   else
-                                       return "";
-                                }());
-                                EventManager::post<EventSettingsChanged>();
+                    // Draw the category description
+                    if (!category.unlocalizedDescription.empty()) {
+                        ImGuiExt::TextFormattedWrapped("{}", Lang(category.unlocalizedDescription));
+                        ImGui::NewLine();
+                    }
 
-                                if (requiresRestart)
-                                    this->m_restartRequested = true;
+                    // Draw all settings of that category
+                    for (auto &subCategory : category.subCategories) {
+
+                        // Skip empty subcategories
+                        if (subCategory.entries.empty())
+                            continue;
+
+                        if (ImGuiExt::BeginSubWindow(Lang(subCategory.unlocalizedName))) {
+                            for (auto &setting : subCategory.entries) {
+                                ImGui::BeginDisabled(!setting.widget->isEnabled());
+                                ImGui::PushItemWidth(-200_scaled);
+                                bool settingChanged = setting.widget->draw(Lang(setting.unlocalizedName));
+                                ImGui::PopItemWidth();
+                                ImGui::EndDisabled();
+
+                                if (const auto &tooltip = setting.widget->getTooltip(); tooltip.has_value() && ImGui::IsItemHovered())
+                                    ImGuiExt::InfoTooltip(Lang(tooltip.value()));
+
+                                auto &widget = setting.widget;
+
+                                // Handle a setting being changed
+                                if (settingChanged) {
+                                    auto newValue = widget->store();
+
+                                    // Write new value to settings
+                                    ContentRegistry::Settings::write<nlohmann::json>(category.unlocalizedName, setting.unlocalizedName, newValue);
+
+                                    // Print a debug message
+                                    log::debug("Setting [{} / {}]: Value was changed to {}", category.unlocalizedName.get(), setting.unlocalizedName.get(), nlohmann::to_string(newValue));
+
+                                    // Signal that the setting was changed
+                                    widget->onChanged();
+
+                                    // Request a restart if the setting requires it
+                                    if (widget->doesRequireRestart()) {
+                                        m_restartRequested = true;
+                                        m_triggerPopup = true;
+                                    }
+                                }
                             }
-                        }
 
-                        ImGui::EndTabItem();
+                        }
+                        ImGuiExt::EndSubWindow();
+                        ImGui::NewLine();
                     }
                 }
-
-                ImGui::EndTabBar();
+                ImGui::EndChild();
             }
-            ImGui::EndPopup();
-        } else
-            this->getWindowOpenState() = false;
 
-        if (!this->getWindowOpenState() && this->m_restartRequested) {
-            View::showYesNoQuestionPopup("hex.builtin.view.settings.restart_question"_lang, ImHexApi::Common::restartImHex, [] {});
+            ImGui::EndTable();
         }
     }
+
+    void ViewSettings::drawAlwaysVisibleContent() {
+        // If a restart is required, ask the user if they want to restart
+        if (!this->getWindowOpenState() && m_triggerPopup) {
+            m_triggerPopup = false;
+            ui::PopupQuestion::open("hex.builtin.view.settings.restart_question"_lang,
+                ImHexApi::System::restartImHex,
+                [this]{
+                    m_restartRequested = false;
+                }
+            );
+        }
+    }
+
 
 }

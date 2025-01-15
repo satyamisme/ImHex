@@ -1,23 +1,30 @@
 #include <hex/helpers/utils.hpp>
 
-#include <cstdio>
-#include <codecvt>
-
 #include <hex/api/imhex_api.hpp>
 
 #include <hex/helpers/fmt.hpp>
+#include <hex/helpers/crypto.hpp>
+
+#include <hex/providers/buffered_reader.hpp>
 
 #include <imgui.h>
-#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 
 #if defined(OS_WINDOWS)
     #include <windows.h>
+    #include <shellapi.h>
+
+    #include <wolv/utils/guards.hpp>
 #elif defined(OS_LINUX)
     #include <unistd.h>
+    #include <dlfcn.h>
+    #include <hex/helpers/utils_linux.hpp>
 #elif defined(OS_MACOS)
-    #include <hex/helpers/utils_macos.hpp>
     #include <unistd.h>
+    #include <dlfcn.h>
+    #include <hex/helpers/utils_macos.hpp>
+#elif defined(OS_WEB)
+    #include "emscripten.h"
 #endif
 
 namespace hex {
@@ -32,6 +39,10 @@ namespace hex {
 
     ImVec2 scaled(const ImVec2 &vector) {
         return vector * ImHexApi::System::getGlobalScale();
+    }
+
+    ImVec2 scaled(float x, float y) {
+        return ImVec2(x, y) * ImHexApi::System::getGlobalScale();
     }
 
     std::string to_string(u128 value) {
@@ -62,8 +73,70 @@ namespace hex {
         if (value < 0) {
             data[index] = '-';
             return { data + index };
-        } else
+        } else {
             return { data + index + 1 };
+        }
+    }
+
+    std::string toLower(std::string string) {
+        for (char &c : string)
+            c = std::tolower(c);
+
+        return string;
+    }
+
+    std::string toUpper(std::string string) {
+        for (char &c : string)
+            c = std::toupper(c);
+
+        return string;
+    }
+
+    std::vector<u8> parseHexString(std::string string) {
+        if (string.empty())
+            return { };
+
+        // Remove common hex prefixes and commas
+        string = hex::replaceStrings(string, "0x", "");
+        string = hex::replaceStrings(string, "0X", "");
+        string = hex::replaceStrings(string, ",", "");
+
+        // Check for non-hex characters
+        bool isValidHexString = std::find_if(string.begin(), string.end(), [](char c) {
+            return !std::isxdigit(c) && !std::isspace(c);
+        }) == string.end();
+
+        if (!isValidHexString)
+            return { };
+
+        // Remove all whitespace
+        std::erase_if(string, [](char c) { return std::isspace(c); });
+
+        // Only parse whole bytes
+        if (string.length() % 2 != 0)
+            return { };
+
+        // Convert hex string to bytes
+        return crypt::decode16(string);
+    }
+
+    std::optional<u8> parseBinaryString(const std::string &string) {
+        if (string.empty())
+            return std::nullopt;
+
+        u8 byte = 0x00;
+        for (char c : string) {
+            byte <<= 1;
+
+            if (c == '1')
+                byte |= 0b01;
+            else if (c == '0')
+                byte |= 0b00;
+            else
+                return std::nullopt;
+        }
+
+        return byte;
     }
 
     std::string toByteString(u64 bytes) {
@@ -196,16 +269,16 @@ namespace hex {
                 return "Space";
             case 127:
                 return "DEL";
-            case 128 ... 255:
-                return " ";
             default:
-                return std::string() + static_cast<char>(c);
+                if (c >= 128)
+                    return " ";
+                else
+                    return std::string() + static_cast<char>(c);
         }
     }
 
     std::vector<std::string> splitString(const std::string &string, const std::string &delimiter) {
         size_t start = 0, end = 0;
-        std::string token;
         std::vector<std::string> res;
 
         while ((end = string.find(delimiter, start)) != std::string::npos) {
@@ -213,7 +286,7 @@ namespace hex {
             if (start + size > string.length())
                 break;
 
-            token = string.substr(start, end - start);
+            std::string token = string.substr(start, end - start);
             start = end + delimiter.length();
             res.push_back(token);
         }
@@ -261,31 +334,37 @@ namespace hex {
         return std::to_string(value).substr(0, 5) + Suffixes[suffixIndex];
     }
 
-    void runCommand(const std::string &command) {
+    void startProgram(const std::string &command) {
 
         #if defined(OS_WINDOWS)
-            auto result = system(hex::format("start {0}", command).c_str());
+            std::ignore = system(hex::format("start {0}", command).c_str());
         #elif defined(OS_MACOS)
-            auto result = system(hex::format("open {0}", command).c_str());
+            std::ignore = system(hex::format("open {0}", command).c_str());
         #elif defined(OS_LINUX)
-            auto result = system(hex::format("xdg-open {0}", command).c_str());
+            executeCmd({"xdg-open", command});
+        #elif defined(OS_WEB)
+            std::ignore = command;
         #endif
+    }
 
-        hex::unused(result);
+    int executeCommand(const std::string &command) {
+        return ::system(command.c_str());
     }
 
     void openWebpage(std::string url) {
-
-        if (url.find("://") == std::string::npos)
+        if (!url.contains("://"))
             url = "https://" + url;
 
         #if defined(OS_WINDOWS)
-            ShellExecute(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         #elif defined(OS_MACOS)
             openWebpageMacos(url.c_str());
         #elif defined(OS_LINUX)
-            auto result = system(hex::format("xdg-open {0}", url).c_str());
-            hex::unused(result);
+            executeCmd({"xdg-open", url});
+        #elif defined(OS_WEB)
+            EM_ASM({
+                window.open(UTF8ToString($0), '_blank');
+            }, url.c_str());
         #else
             #warning "Unknown OS, can't open webpages"
         #endif
@@ -304,9 +383,9 @@ namespace hex {
         std::string result;
 
         for (u8 byte : bytes) {
-            if (std::isprint(byte) && byte != '\\')
+            if (std::isprint(byte) && byte != '\\') {
                 result += char(byte);
-            else {
+            } else {
                 switch (byte) {
                     case '\\':
                         result += "\\";
@@ -413,6 +492,124 @@ namespace hex {
         return result;
     }
 
+    std::wstring utf8ToUtf16(const std::string& utf8) {
+        std::vector<u32> unicodes;
+
+        for (size_t byteIndex = 0; byteIndex < utf8.size();) {
+            u32 unicode = 0;
+            size_t unicodeSize = 0;
+
+            u8 ch = utf8[byteIndex];
+            byteIndex += 1;
+
+            if (ch <= 0x7F) {
+                unicode = ch;
+                unicodeSize = 0;
+            } else if (ch <= 0xBF) {
+                return { };
+            } else if (ch <= 0xDF) {
+                unicode = ch&0x1F;
+                unicodeSize = 1;
+            } else if (ch <= 0xEF) {
+                unicode = ch&0x0F;
+                unicodeSize = 2;
+            } else if (ch <= 0xF7) {
+                unicode = ch&0x07;
+                unicodeSize = 3;
+            } else {
+                return { };
+            }
+
+            for (size_t unicodeByteIndex = 0; unicodeByteIndex < unicodeSize; unicodeByteIndex += 1) {
+                if (byteIndex == utf8.size())
+                    return { };
+
+                u8 byte = utf8[byteIndex];
+                if (byte < 0x80 || byte > 0xBF)
+                    return { };
+
+                unicode <<= 6;
+                unicode += byte & 0x3F;
+
+                byteIndex += 1;
+            }
+
+            if (unicode >= 0xD800 && unicode <= 0xDFFF)
+                return { };
+            if (unicode > 0x10FFFF)
+                return { };
+
+            unicodes.push_back(unicode);
+        }
+
+        std::wstring utf16;
+
+        for (auto unicode : unicodes) {
+            if (unicode <= 0xFFFF) {
+                utf16 += static_cast<wchar_t>(unicode);
+            } else {
+                unicode -= 0x10000;
+                utf16 += static_cast<wchar_t>(((unicode >> 10) + 0xD800));
+                utf16 += static_cast<wchar_t>(((unicode & 0x3FF) + 0xDC00));
+            }
+        }
+        return utf16;
+    }
+
+    std::string utf16ToUtf8(const std::wstring& utf16) {
+        std::vector<u32> unicodes;
+
+        for (size_t index = 0; index < utf16.size();) {
+            u32 unicode = 0;
+
+            wchar_t wch = utf16[index];
+            index += 1;
+
+            if (wch < 0xD800 || wch > 0xDFFF) {
+                unicode = static_cast<u32>(wch);
+            } else if (wch >= 0xD800 && wch <= 0xDBFF) {
+                if (index == utf16.size())
+                    return "";
+
+                wchar_t nextWch = utf16[index];
+                index += 1;
+
+                if (nextWch < 0xDC00 || nextWch > 0xDFFF)
+                    return "";
+
+                unicode = static_cast<u32>(((wch - 0xD800) << 10) + (nextWch - 0xDC00) + 0x10000);
+            } else {
+                return "";
+            }
+
+            unicodes.push_back(unicode);
+        }
+
+        std::string utf8;
+
+        for (auto unicode : unicodes) {
+            if (unicode <= 0x7F) {
+                utf8 += static_cast<char>(unicode);
+            } else if (unicode <= 0x7FF) {
+                utf8 += static_cast<char>(0xC0 | ((unicode >> 6) & 0x1F));
+                utf8 += static_cast<char>(0x80 | (unicode & 0x3F));
+            } else if (unicode <= 0xFFFF) {
+                utf8 += static_cast<char>(0xE0 | ((unicode >> 12) & 0x0F));
+                utf8 += static_cast<char>(0x80 | ((unicode >> 6) & 0x3F));
+                utf8 += static_cast<char>(0x80 | (unicode & 0x3F));
+            } else if (unicode <= 0x10FFFF) {
+                utf8 += static_cast<char>(0xF0 | ((unicode >> 18) & 0x07));
+                utf8 += static_cast<char>(0x80 | ((unicode >> 12) & 0x3F));
+                utf8 += static_cast<char>(0x80 | ((unicode >> 6) & 0x3F));
+                utf8 += static_cast<char>(0x80 | (unicode & 0x3F));
+            } else {
+                return "";
+            }
+        }
+
+        return utf8;
+    }
+
     float float16ToFloat32(u16 float16) {
         u32 sign     = float16 >> 15;
         u32 exponent = (float16 >> 10) & 0x1F;
@@ -451,26 +648,27 @@ namespace hex {
     }
 
     bool isProcessElevated() {
-#if defined(OS_WINDOWS)
-        bool elevated = false;
-        HANDLE token  = INVALID_HANDLE_VALUE;
+        #if defined(OS_WINDOWS)
+            bool elevated = false;
+            HANDLE token  = INVALID_HANDLE_VALUE;
 
-        if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
-            TOKEN_ELEVATION elevation;
-            DWORD elevationSize = sizeof(TOKEN_ELEVATION);
+            if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
+                TOKEN_ELEVATION elevation;
+                DWORD elevationSize = sizeof(TOKEN_ELEVATION);
 
-            if (::GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &elevationSize))
-                elevated = elevation.TokenIsElevated;
-        }
+                if (::GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &elevationSize))
+                    elevated = elevation.TokenIsElevated;
+            }
 
-        if (token != INVALID_HANDLE_VALUE)
-            ::CloseHandle(token);
+            if (token != INVALID_HANDLE_VALUE)
+                ::CloseHandle(token);
 
-        return elevated;
-
-#elif defined(OS_LINUX) || defined(OS_MACOS)
-        return getuid() == 0 || getuid() != geteuid();
-#endif
+            return elevated;
+        #elif defined(OS_LINUX) || defined(OS_MACOS)
+            return getuid() == 0 || getuid() != geteuid();
+        #else
+            return false;
+        #endif
     }
 
     std::optional<std::string> getEnvironmentVariable(const std::string &env) {
@@ -480,6 +678,182 @@ namespace hex {
             return std::nullopt;
         else
             return value;
+    }
+
+    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength) {
+        // If the string is shorter than the max length, return it as is
+        if (string.size() < maxLength)
+            return string;
+
+        // If the string is longer than the max length, find the last space before the max length
+        auto it = string.begin() + maxLength / 2;
+        while (it != string.begin() && !std::isspace(*it)) --it;
+
+        // If there's no space before the max length, just cut the string
+        if (it == string.begin()) {
+            it = string.begin() + maxLength / 2;
+
+            // Try to find a UTF-8 character boundary
+            while (it != string.begin() && (*it & 0xC0) == 0x80) --it;
+        }
+
+        // If we still didn't find a valid boundary, just return the string as is
+        if (it == string.begin())
+            return string;
+
+        auto result = std::string(string.begin(), it) + "…";
+
+        // If the string is longer than the max length, find the last space before the max length
+        it = string.end() - 1 - maxLength / 2;
+        while (it != string.end() && !std::isspace(*it)) ++it;
+
+        // If there's no space before the max length, just cut the string
+        if (it == string.end()) {
+            it = string.end() - 1 - maxLength / 2;
+
+            // Try to find a UTF-8 character boundary
+            while (it != string.end() && (*it & 0xC0) == 0x80) ++it;
+        }
+
+        return result + std::string(it, string.end());
+    }
+
+    static std::optional<std::fs::path> s_fileToOpen;
+    extern "C" void openFile(const char *path) {
+        log::info("Opening file: {0}", path);
+        s_fileToOpen = path;
+    }
+
+    std::optional<std::fs::path> getInitialFilePath() {
+        return s_fileToOpen;
+    }
+
+    static std::map<std::fs::path, std::string> s_fonts;
+    extern "C" void registerFont(const char *fontName, const char *fontPath) {
+        s_fonts[fontPath] = fontName;
+    }
+
+    const std::map<std::fs::path, std::string>& getFonts() {
+        return s_fonts;
+    }
+
+    namespace {
+
+        std::string generateHexViewImpl(u64 offset, auto begin, auto end) {
+            constexpr static auto HeaderLine = "Hex View  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F\n";
+            std::string result;
+
+            const auto size = std::distance(begin, end);
+            result.reserve(std::string(HeaderLine).size() * size / 0x10);
+
+            result += HeaderLine;
+
+            u64 address = offset & ~u64(0x0F);
+            std::string asciiRow;
+            for (auto it = begin; it != end; ++it) {
+                u8 byte = *it;
+
+                if ((address % 0x10) == 0) {
+                    result += hex::format(" {}", asciiRow);
+                    result += hex::format("\n{0:08X}  ", address);
+
+                    asciiRow.clear();
+
+                    if (address == (offset & ~u64(0x0F))) {
+                        for (u64 i = 0; i < (offset - address); i++) {
+                            result += "   ";
+                            asciiRow += " ";
+                        }
+
+                        if (offset - address >= 8)
+                            result += " ";
+
+                        address = offset;
+                    }
+                }
+
+                result += hex::format("{0:02X} ", byte);
+                asciiRow += std::isprint(byte) ? char(byte) : '.';
+                if ((address % 0x10) == 0x07)
+                    result += " ";
+
+                address++;
+            }
+
+            if ((address % 0x10) != 0x00)
+                for (u32 i = 0; i < (0x10 - (address % 0x10)); i++)
+                    result += "   ";
+
+            result += hex::format(" {}", asciiRow);
+
+            return result;
+        }
+
+    }
+
+    std::string generateHexView(u64 offset, u64 size, prv::Provider *provider) {
+        auto reader = prv::ProviderReader(provider);
+        reader.seek(offset);
+        reader.setEndAddress((offset + size) - 1);
+
+        return generateHexViewImpl(offset, reader.begin(), reader.end());
+    }
+
+    std::string generateHexView(u64 offset, const std::vector<u8> &data) {
+        return generateHexViewImpl(offset, data.begin(), data.end());
+    }
+
+    std::string formatSystemError(i32 error) {
+        #if defined(OS_WINDOWS)
+            wchar_t *message = nullptr;
+            auto wLength = FormatMessageW(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                nullptr, error,
+                MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                (wchar_t*)&message, 0,
+                nullptr
+            );
+            ON_SCOPE_EXIT { LocalFree(message); };
+
+            auto length = ::WideCharToMultiByte(CP_UTF8, 0, message, wLength, nullptr, 0, nullptr, nullptr);
+            std::string result(length, '\x00');
+            ::WideCharToMultiByte(CP_UTF8, 0, message, wLength, result.data(), length, nullptr, nullptr);
+
+            return result;
+        #else
+            return std::system_category().message(error);
+        #endif
+    }
+
+
+    void* getContainingModule(void* symbol) {
+        #if defined(OS_WINDOWS)
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(symbol, &mbi, sizeof(mbi)))
+                return mbi.AllocationBase;
+
+            return nullptr;
+        #elif !defined(OS_WEB)
+            Dl_info info = {};
+            if (dladdr(symbol, &info) == 0)
+                return nullptr;
+
+            return dlopen(info.dli_fname, RTLD_LAZY);
+        #else
+            std::ignore = symbol;
+            return nullptr;
+        #endif
+    }
+
+    std::optional<ImColor> blendColors(const std::optional<ImColor> &a, const std::optional<ImColor> &b) {
+        if (!a.has_value() && !b.has_value())
+            return std::nullopt;
+        else if (a.has_value() && !b.has_value())
+            return a;
+        else if (!a.has_value() && b.has_value())
+            return b;
+        else
+            return ImAlphaBlendColors(a.value(), b.value());
     }
 
 }

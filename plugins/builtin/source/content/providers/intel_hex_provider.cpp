@@ -2,13 +2,15 @@
 
 #include <cstring>
 
-#include <hex/api/imhex_api.hpp>
-#include <hex/api/localization.hpp>
+#include <hex/api/localization_manager.hpp>
 #include <hex/helpers/utils.hpp>
-#include <hex/helpers/file.hpp>
 #include <hex/helpers/fmt.hpp>
 
 #include <nlohmann/json.hpp>
+
+#include <wolv/io/file.hpp>
+#include <wolv/utils/expected.hpp>
+#include <wolv/utils/string.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -25,13 +27,13 @@ namespace hex::plugin::builtin {
                 throw std::runtime_error("Failed to parse hex digit");
         }
 
-        std::map<u64, std::vector<u8>> parseIntelHex(const std::string &string) {
+        wolv::util::Expected<std::map<u64, std::vector<u8>>, std::string> parseIntelHex(const std::string &string) {
             std::map<u64, std::vector<u8>> result;
 
             u8 checksum = 0x00;
             u64 offset = 0x00;
 
-            u8 byteCount = 0x00;
+            u8  byteCount = 0x00;
             u32 segmentAddress = 0x0000'0000;
             u32 extendedLinearAddress = 0x0000'0000;
             u16 address = 0x0000;
@@ -46,8 +48,8 @@ namespace hex::plugin::builtin {
                 StartLinearAddress      = 0x05
             } recordType;
 
-            auto c = [&]() {
-                while (std::isspace(string[offset]) && offset < string.length())
+            auto c = [&] {
+                while (offset < string.length() && std::isspace(string[offset]))
                     offset++;
 
                 if (offset >= string.length())
@@ -56,9 +58,9 @@ namespace hex::plugin::builtin {
                 return string[offset++];
             };
 
-            auto parseValue = [&](u8 byteCount) {
+            auto parseValue = [&](u8 count) {
                 u64 value = 0x00;
-                for (u8 i = 0; i < byteCount; i++) {
+                for (u8 i = 0; i < count; i++) {
                     u8 byte = (parseHexDigit(c()) << 4) | parseHexDigit(c());
                     value <<= 8;
                     value |= byte;
@@ -142,10 +144,13 @@ namespace hex::plugin::builtin {
                             break;
                         }
                     }
+
+                    while (std::isspace(string[offset]) && offset < string.length())
+                        offset++;
                 }
 
             } catch (const std::runtime_error &e) {
-                return { };
+                return wolv::util::Unexpected<std::string>(e.what());
             }
 
             return result;
@@ -156,59 +161,63 @@ namespace hex::plugin::builtin {
     void IntelHexProvider::setBaseAddress(u64 address) {
         auto oldBase = this->getBaseAddress();
 
-        auto intervals = this->m_data.findOverlapping(oldBase, oldBase + this->getActualSize());
+        auto regions = m_data.overlapping({ oldBase, oldBase + this->getActualSize() });
 
-        for (auto &interval : intervals) {
-            interval.start = (interval.start - oldBase) + address;
-            interval.stop  = (interval.stop  - oldBase) + address;
+        decltype(m_data) newIntervals;
+        for (auto &[interval, data] : regions) {
+            newIntervals.insert({ interval.start - oldBase + address, interval.end - oldBase + address }, *data);
         }
-
-        this->m_data = std::move(intervals);
+        m_data = newIntervals;
 
         Provider::setBaseAddress(address);
     }
 
     void IntelHexProvider::readRaw(u64 offset, void *buffer, size_t size) {
-        auto intervals = this->m_data.findOverlapping(offset, (offset + size) - 1);
+        auto intervals = m_data.overlapping({ offset, (offset + size) - 1 });
 
         std::memset(buffer, 0x00, size);
-        auto bytes = reinterpret_cast<u8*>(buffer);
-        for (const auto &interval : intervals) {
-            for (u32 i = std::max(interval.start, offset); i <= interval.stop && (i - offset) < size; i++) {
-                bytes[i - offset] =  interval.value[i - interval.start];
+        auto bytes = static_cast<u8*>(buffer);
+        for (const auto &[interval, data] : intervals) {
+            for (u32 i = std::max(interval.start, offset); i <= interval.end && (i - offset) < size; i++) {
+                bytes[i - offset] = (*data)[i - interval.start];
             }
         }
     }
 
     void IntelHexProvider::writeRaw(u64 offset, const void *buffer, size_t size) {
-        hex::unused(offset, buffer, size);
+        std::ignore = offset;
+        std::ignore = buffer;
+        std::ignore = size;
     }
 
-    size_t IntelHexProvider::getActualSize() const {
-        return this->m_dataSize;
+    u64 IntelHexProvider::getActualSize() const {
+        return m_dataSize;
     }
 
     bool IntelHexProvider::open() {
-        auto file = fs::File(this->m_sourceFilePath, fs::File::Mode::Read);
-        if (!file.isValid())
+        auto file = wolv::io::File(m_sourceFilePath, wolv::io::File::Mode::Read);
+        if (!file.isValid()) {
+            this->setErrorMessage(hex::format("hex.builtin.provider.file.error.open"_lang, m_sourceFilePath.string(), std::system_category().message(errno)));
             return false;
+        }
 
         auto data = intel_hex::parseIntelHex(file.readString());
-        if (data.empty())
+        if (!data.has_value()) {
+            this->setErrorMessage(data.error());
             return false;
+        }
 
         u64 maxAddress = 0x00;
-        decltype(this->m_data)::interval_vector intervals;
-        for (auto &[address, bytes] : data) {
+        for (auto &[address, bytes] : data.value()) {
             auto endAddress = (address + bytes.size()) - 1;
-            intervals.emplace_back(address, endAddress, std::move(bytes));
+            m_data.emplace({ address, endAddress }, std::move(bytes));
 
             if (endAddress > maxAddress)
                 maxAddress = endAddress;
         }
-        this->m_data = std::move(intervals);
-        this->m_dataSize = maxAddress + 1;
-        this->m_dataValid = true;
+
+        m_dataSize = maxAddress + 1;
+        m_dataValid = true;
 
         return true;
     }
@@ -218,44 +227,69 @@ namespace hex::plugin::builtin {
     }
 
     [[nodiscard]] std::string IntelHexProvider::getName() const {
-        return hex::format("hex.builtin.provider.intel_hex.name"_lang, hex::toUTF8String(this->m_sourceFilePath.filename()));
+        return hex::format("hex.builtin.provider.intel_hex.name"_lang, wolv::util::toUTF8String(m_sourceFilePath.filename()));
+    }
+
+    [[nodiscard]] std::vector<IntelHexProvider::Description> IntelHexProvider::getDataDescription() const {
+        std::vector<Description> result;
+
+        result.emplace_back("hex.builtin.provider.file.path"_lang, wolv::util::toUTF8String(m_sourceFilePath));
+        result.emplace_back("hex.builtin.provider.file.size"_lang, hex::toByteString(this->getActualSize()));
+
+        return result;
     }
 
     bool IntelHexProvider::handleFilePicker() {
-        auto picked = fs::openFileBrowser(fs::DialogMode::Open, { { "Intel Hex File", "*" } }, [this](const std::fs::path &path) {
-            this->m_sourceFilePath = path;
-        });
+        auto picked = fs::openFileBrowser(fs::DialogMode::Open, {
+                { "Intel Hex File", "hex" },
+                { "Intel Hex File", "h86" },
+                { "Intel Hex File", "hxl" },
+                { "Intel Hex File", "hxh" },
+                { "Intel Hex File", "obl" },
+                { "Intel Hex File", "obh" },
+                { "Intel Hex File", "mcs" },
+                { "Intel Hex File", "ihex" },
+                { "Intel Hex File", "ihe" },
+                { "Intel Hex File", "ihx" },
+                { "Intel Hex File", "a43" },
+                { "Intel Hex File", "a90" }
+            }, [this](const std::fs::path &path) {
+                m_sourceFilePath = path;
+            }
+        );
+
         if (!picked)
             return false;
-        if (!fs::isRegularFile(this->m_sourceFilePath))
+        if (!wolv::io::fs::isRegularFile(m_sourceFilePath))
             return false;
 
         return true;
     }
 
     std::pair<Region, bool> IntelHexProvider::getRegionValidity(u64 address) const {
-        auto intervals = this->m_data.findOverlapping(address, address);
+        auto intervals = m_data.overlapping({ address, address });
         if (intervals.empty()) {
-            return Provider::getRegionValidity(address);
+            return { Region(address, 1), false };
         }
 
-        auto closestInterval = intervals.front();
-        for (const auto &interval : intervals) {
-            if (interval.start < closestInterval.start)
+        decltype(m_data)::Interval closestInterval = { 0, 0 };
+        for (const auto &[interval, data] : intervals) {
+            if (interval.start <= closestInterval.end)
                 closestInterval = interval;
         }
-        return { Region { closestInterval.start, (closestInterval.stop - closestInterval.start) + 1}, true };
+
+        return { Region { closestInterval.start, (closestInterval.end - closestInterval.start) + 1}, Provider::getRegionValidity(address).second };
     }
 
     void IntelHexProvider::loadSettings(const nlohmann::json &settings) {
         Provider::loadSettings(settings);
 
-        auto path = settings["path"].get<std::string>();
-        this->m_sourceFilePath = std::u8string(path.begin(), path.end());
+        auto path = settings.at("path").get<std::string>();
+        m_sourceFilePath = std::u8string(path.begin(), path.end());
     }
 
     nlohmann::json IntelHexProvider::storeSettings(nlohmann::json settings) const {
-        settings["path"] = hex::toUTF8String(this->m_sourceFilePath);
+        settings["path"] = wolv::io::fs::toNormalizedPathString(m_sourceFilePath);
 
         return Provider::storeSettings(settings);
     }

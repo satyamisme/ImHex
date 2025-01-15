@@ -4,7 +4,9 @@
 
 #include <hex/helpers/fs.hpp>
 
-#include <microtar.h>
+#include <memory>
+
+struct mtar_t;
 
 namespace hex {
 
@@ -26,24 +28,35 @@ namespace hex {
 
         void close();
 
-        [[nodiscard]] std::vector<u8> read(const std::fs::path &path);
-        [[nodiscard]] std::string readString(const std::fs::path &path);
+        /**
+         * @brief get the error string explaining the error that occurred when opening the file.
+         * This error is a combination of the tar error and the native file open error
+         */
+        std::string getOpenErrorString() const;
 
-        void write(const std::fs::path &path, const std::vector<u8> &data);
-        void write(const std::fs::path &path, const std::string &data);
+        [[nodiscard]] std::vector<u8> readVector(const std::fs::path &path) const;
+        [[nodiscard]] std::string readString(const std::fs::path &path) const;
 
-        [[nodiscard]] std::vector<std::fs::path> listEntries(const std::fs::path &basePath = "/");
-        [[nodiscard]] bool contains(const std::fs::path &path);
+        void writeVector(const std::fs::path &path, const std::vector<u8> &data) const;
+        void writeString(const std::fs::path &path, const std::string &data) const;
 
-        void extract(const std::fs::path &path, const std::fs::path &outputPath);
-        void extractAll(const std::fs::path &outputPath);
+        [[nodiscard]] std::vector<std::fs::path> listEntries(const std::fs::path &basePath = "/") const;
+        [[nodiscard]] bool contains(const std::fs::path &path) const;
 
-        [[nodiscard]] bool isValid() const { return this->m_valid; }
+        void extract(const std::fs::path &path, const std::fs::path &outputPath) const;
+        void extractAll(const std::fs::path &outputPath) const;
+
+        [[nodiscard]] bool isValid() const { return m_valid; }
 
     private:
-        mtar_t m_ctx = { };
+        std::unique_ptr<mtar_t> m_ctx;
+        std::fs::path m_path;
 
         bool m_valid = false;
+        
+        // These will be updated when the constructor is called
+        int m_tarOpenErrno  = 0;
+        int m_fileOpenErrno = 0;
     };
 
 }

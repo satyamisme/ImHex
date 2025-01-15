@@ -13,15 +13,13 @@ namespace hex::plugin::builtin {
         void close() override;
 
         [[nodiscard]] std::string getName() const override;
+        std::vector<IntelHexProvider::Description> getDataDescription() const override;
 
-        [[nodiscard]] std::string getTypeName() const override {
+        [[nodiscard]] UnlocalizedString getTypeName() const override {
             return "hex.builtin.provider.motorola_srec";
         }
 
         bool handleFilePicker() override;
-
-    private:
-
     };
 
 }

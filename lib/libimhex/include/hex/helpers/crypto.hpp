@@ -2,10 +2,14 @@
 
 #include <hex.hpp>
 
+#include <wolv/utils/expected.hpp>
+
 #include <array>
-#include <optional>
 #include <string>
 #include <vector>
+
+#define CRYPTO_ERROR_INVALID_KEY_LENGTH (-1)
+#define CRYPTO_ERROR_INVALID_MODE (-2)
 
 namespace hex::prv {
     class Provider;
@@ -16,9 +20,9 @@ namespace hex::crypt {
     void initialize();
     void exit();
 
-    u16 crc8(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorout, bool reflectIn, bool reflectOut);
-    u16 crc16(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorout, bool reflectIn, bool reflectOut);
-    u32 crc32(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorout, bool reflectIn, bool reflectOut);
+    u8 crc8(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorOut, bool reflectIn, bool reflectOut);
+    u16 crc16(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorOut, bool reflectIn, bool reflectOut);
+    u32 crc32(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorOut, bool reflectIn, bool reflectOut);
 
     std::array<u8, 16> md5(prv::Provider *&data, u64 offset, size_t size);
     std::array<u8, 20> sha1(prv::Provider *&data, u64 offset, size_t size);
@@ -61,5 +65,5 @@ namespace hex::crypt {
         Key256Bits = 2
     };
 
-    std::vector<u8> aesDecrypt(AESMode mode, KeyLength keyLength, const std::vector<u8> &key, std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::vector<u8> &input);
+    wolv::util::Expected<std::vector<u8>, int> aesDecrypt(AESMode mode, KeyLength keyLength, const std::vector<u8> &key, std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::vector<u8> &input);
 }

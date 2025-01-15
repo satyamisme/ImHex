@@ -1,592 +1,1098 @@
 #include <hex/api/imhex_api.hpp>
 #include <hex/api/content_registry.hpp>
-#include <hex/api/imhex_api.hpp>
-#include <hex/api/localization.hpp>
+#include <hex/api/localization_manager.hpp>
+#include <hex/api/theme_manager.hpp>
+#include <hex/api/shortcut_manager.hpp>
+#include <hex/api/event_manager.hpp>
+#include <hex/api/layout_manager.hpp>
 
-#include <hex/helpers/net.hpp>
+#include <hex/helpers/http_requests.hpp>
 #include <hex/helpers/utils.hpp>
-#include <hex/helpers/logger.hpp>
 
 #include <imgui.h>
 #include <hex/ui/imgui_imhex_extensions.h>
-#include <fonts/codicons_font.h>
+#include <fonts/vscode_icons.hpp>
+
+#include <wolv/literals.hpp>
+#include <wolv/utils/string.hpp>
 
 #include <nlohmann/json.hpp>
 
-namespace {
-
-    std::vector<std::fs::path> userFolders;
-
-    void loadUserFoldersFromSetting(nlohmann::json &setting) {
-        userFolders.clear();
-        std::vector<std::string> paths = setting;
-        for (const auto &path : paths) {
-            // JSON reads char8_t as array, char8_t is not supported as of now
-            std::u8string_view uString(reinterpret_cast<const char8_t *>(&path.front()), reinterpret_cast<const char8_t *>(std::next(&path.back())));
-            userFolders.emplace_back(uString);
-        }
-    }
-
-}
+#include <utility>
 
 namespace hex::plugin::builtin {
 
-    void registerSettings() {
+    using namespace wolv::literals;
 
-        /* General */
+    namespace {
 
-        /* Values of this setting :
-        0 - do not check for updates on startup
-        1 - check for updates on startup
-        2 - default value - ask the user if he wants to check for updates. This value should only be encountered on the first startup.
+        bool s_showScalingWarning = true;
+
+        /*
+            Values of this setting:
+            0 - do not check for updates on startup
+            1 - check for updates on startup
+            2 - default value - ask the user if he wants to check for updates. This value should only be encountered on the first startup.
         */
-        ContentRegistry::Settings::add("hex.builtin.setting.general", "hex.builtin.setting.general.check_for_updates", 2, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting) == 1;
+        class ServerContactWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            bool draw(const std::string &name) override {
+                bool enabled = m_value == 1;
 
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.general", "hex.builtin.setting.general.show_tips", 1, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.general", "hex.builtin.setting.general.auto_load_patterns", 1, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.general", "hex.builtin.setting.general.sync_pattern_source", 0, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.general", "hex.builtin.setting.general.enable_unicode", 1, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        });
-
-        /* Interface */
-
-        ContentRegistry::Settings::add("hex.builtin.setting.interface", "hex.builtin.setting.interface.color", 0, [](auto name, nlohmann::json &setting) {
-            static int selection = static_cast<int>(setting);
-
-            const char *themes[] = {
-                "hex.builtin.setting.interface.color.system"_lang,
-                "hex.builtin.setting.interface.color.dark"_lang,
-                "hex.builtin.setting.interface.color.light"_lang,
-                "hex.builtin.setting.interface.color.classic"_lang
-            };
-
-            if (ImGui::Combo(name.data(), &selection, themes, IM_ARRAYSIZE(themes))) {
-                setting = selection;
-
-                ImHexApi::System::enableSystemThemeDetection(selection == 0);
-                if (selection != 0)
-                    ImHexApi::System::setTheme(static_cast<ImHexApi::System::Theme>(selection));
-
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add(
-            "hex.builtin.setting.interface", "hex.builtin.setting.interface.scaling", 0, [](auto name, nlohmann::json &setting) {
-                static int selection = static_cast<int>(setting);
-
-                const char *scaling[] = {
-                    "hex.builtin.setting.interface.scaling.native"_lang,
-                    "hex.builtin.setting.interface.scaling.x0_5"_lang,
-                    "hex.builtin.setting.interface.scaling.x1_0"_lang,
-                    "hex.builtin.setting.interface.scaling.x1_5"_lang,
-                    "hex.builtin.setting.interface.scaling.x2_0"_lang,
-                    "hex.builtin.setting.interface.scaling.x3_0"_lang,
-                    "hex.builtin.setting.interface.scaling.x4_0"_lang,
-                };
-
-                if (ImGui::Combo(name.data(), &selection, scaling, IM_ARRAYSIZE(scaling))) {
-                    setting = selection;
-
-                    ImHexApi::Common::restartImHex();
-
+                if (ImGui::Checkbox(name.data(), &enabled)) {
+                    m_value = enabled ? 1 : 0;
                     return true;
                 }
 
                 return false;
-            },
-            true);
-
-        ContentRegistry::Settings::add("hex.builtin.setting.interface", "hex.builtin.setting.interface.language", "en-US", [](auto name, nlohmann::json &setting) {
-            auto &languages = LangEntry::getSupportedLanguages();
-
-            static int selection = [&]() -> int {
-                u16 index = 0;
-                for (auto &[languageCode, languageName] : languages) {
-                    if (languageCode == setting)
-                        return index;
-                    index++;
-                }
-
-                return 0;
-            }();
-
-            static auto languageNames = [&]() {
-                std::vector<const char *> result;
-                result.reserve(languages.size());
-
-                for (auto &[languageCode, languageName] : languages)
-                    result.push_back(languageName.c_str());
-
-                return result;
-            }();
-
-
-            if (ImGui::Combo(name.data(), &selection, languageNames.data(), languageNames.size())) {
-
-                u16 index = 0;
-                for (auto &[languageCode, languageName] : languages) {
-                    if (selection == index) {
-                        setting = languageCode;
-                        break;
-                    }
-                    index++;
-                }
-
-                return true;
             }
 
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.interface", "hex.builtin.setting.interface.wiki_explain_language", "en", [](auto name, nlohmann::json &setting) {
-            static auto lang = std::string(setting);
-
-            if (ImGui::InputText(name.data(), lang, ImGuiInputTextFlags_CharsNoBlank)) {
-                setting = std::string(lang.c_str()); // remove following zero bytes
-                return true;
+            void load(const nlohmann::json &data) override {
+                if (data.is_number())
+                    m_value = data.get<int>();
             }
 
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.interface", "hex.builtin.setting.interface.fps", 60, [](auto name, nlohmann::json &setting) {
-            static int fps = static_cast<int>(setting);
-
-            auto format = fps > 200 ? "hex.builtin.setting.interface.fps.unlocked"_lang : "%d FPS";
-
-            if (ImGui::SliderInt(name.data(), &fps, 15, 201, format, ImGuiSliderFlags_AlwaysClamp)) {
-                setting = fps;
-                return true;
+            nlohmann::json store() override {
+                return m_value;
             }
 
-            return false;
-        });
+        private:
+            u32 m_value = 2;
+        };
 
-        ContentRegistry::Settings::add("hex.builtin.setting.interface", "hex.builtin.setting.interface.multi_windows", 1, [](auto name, nlohmann::json &setting) {
-            static bool enabled = static_cast<int>(setting);
+        class FPSWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            bool draw(const std::string &name) override {
+                auto format = [this] -> std::string {
+                    if (m_value > 200)
+                        return "hex.builtin.setting.interface.fps.unlocked"_lang;
+                    else if (m_value < 15)
+                        return "hex.builtin.setting.interface.fps.native"_lang;
+                    else
+                        return "%d FPS";
+                }();
 
-            if (ImGui::Checkbox(name.data(), &enabled)) {
-                setting = static_cast<int>(enabled);
-                return true;
-            }
-
-            return false;
-        }, true);
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.highlight_color", 0x60C08080, [](auto name, nlohmann::json &setting) {
-            static auto color = static_cast<color_t>(setting);
-
-            std::array<float, 4> colorArray = {
-                ((color >>  0) & 0x000000FF) / float(0xFF),
-                ((color >>  8) & 0x000000FF) / float(0xFF),
-                ((color >> 16) & 0x000000FF) / float(0xFF),
-                ((color >> 24) & 0x000000FF) / float(0xFF)
-            };
-
-            if (ImGui::ColorEdit4(name.data(), colorArray.data(), ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_NoInputs)) {
-                color =
-                    (color_t(colorArray[0] * 0xFF) <<  0) |
-                    (color_t(colorArray[1] * 0xFF) <<  8) |
-                    (color_t(colorArray[2] * 0xFF) << 16) |
-                    (color_t(colorArray[3] * 0xFF) << 24);
-
-                setting = color;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.bytes_per_row", 16, [](auto name, nlohmann::json &setting) {
-            static int columns = static_cast<int>(setting);
-
-            if (ImGui::SliderInt(name.data(), &columns, 1, 32)) {
-                setting = columns;
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.ascii", 1, [](auto name, nlohmann::json &setting) {
-            static bool ascii = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &ascii)) {
-                setting = static_cast<int>(ascii);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.advanced_decoding", 1, [](auto name, nlohmann::json &setting) {
-            static bool advancedDecoding = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &advancedDecoding)) {
-                setting = static_cast<int>(advancedDecoding);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.grey_zeros", 1, [](auto name, nlohmann::json &setting) {
-            static bool greyZeros = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &greyZeros)) {
-                setting = static_cast<int>(greyZeros);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.uppercase_hex", 1, [](auto name, nlohmann::json &setting) {
-            static bool upperCaseHex = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &upperCaseHex)) {
-                setting = static_cast<int>(upperCaseHex);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.visualizer", "hex.builtin.visualizer.hexadecimal.8bit", [](auto name, nlohmann::json &setting) {
-            auto &visualizers = ContentRegistry::HexEditor::impl::getVisualizers();
-
-            auto selectedVisualizer = setting;
-
-            bool result = false;
-            if (ImGui::BeginCombo(name.data(), LangEntry(selectedVisualizer))) {
-
-                for (const auto &[unlocalizedName, visualizer] : visualizers) {
-                    if (ImGui::Selectable(LangEntry(unlocalizedName))) {
-                        setting = unlocalizedName;
-                        result  = true;
-                    }
-                }
-
-                ImGui::EndCombo();
-            }
-
-            return result;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.sync_scrolling", 0, [](auto name, nlohmann::json &setting) {
-            static bool syncScrolling = static_cast<int>(setting);
-
-            if (ImGui::Checkbox(name.data(), &syncScrolling)) {
-                setting = static_cast<int>(syncScrolling);
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.byte_padding", 0, [](auto name, nlohmann::json &setting) {
-            static int padding = static_cast<int>(setting);
-
-            if (ImGui::SliderInt(name.data(), &padding, 0, 50)) {
-                setting = padding;
-                return true;
-            }
-
-            return false;
-        });
-
-        ContentRegistry::Settings::add("hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.char_padding", 0, [](auto name, nlohmann::json &setting) {
-            static int padding = static_cast<int>(setting);
-
-            if (ImGui::SliderInt(name.data(), &padding, 0, 50)) {
-                setting = padding;
-                return true;
-            }
-
-            return false;
-        });
-
-
-        /* Fonts */
-
-        static std::string fontPath;
-        ContentRegistry::Settings::add(
-            "hex.builtin.setting.font", "hex.builtin.setting.font.font_path", "", [](auto name, nlohmann::json &setting) {
-                fontPath = static_cast<std::string>(setting);
-
-                if (ImGui::InputText("##font_path", fontPath)) {
-                    setting = fontPath;
-                    return true;
-                }
-
-                ImGui::SameLine();
-
-                if (ImGui::IconButton(ICON_VS_FOLDER_OPENED, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
-                    return fs::openFileBrowser(fs::DialogMode::Open, { {"TTF Font", "ttf"} },
-                        [&](const std::fs::path &path) {
-                            fontPath = hex::toUTF8String(path);
-                            setting  = fontPath;
-                        });
-                }
-
-                ImGui::SameLine();
-
-                ImGui::TextFormatted("{}", name);
-
-                return false;
-            },
-            true);
-
-        ContentRegistry::Settings::add(
-            "hex.builtin.setting.font", "hex.builtin.setting.font.font_size", 13, [](auto name, nlohmann::json &setting) {
-                static int fontSize = static_cast<int>(setting);
-
-                ImGui::BeginDisabled(fontPath.empty());
-                ON_SCOPE_EXIT { ImGui::EndDisabled(); };
-
-                if (ImGui::SliderInt(name.data(), &fontSize, 0, 100, "%d", ImGuiSliderFlags_NoInput)) {
-                    setting = fontSize;
+                if (ImGui::SliderInt(name.data(), &m_value, 14, 201, format.c_str(), ImGuiSliderFlags_AlwaysClamp)) {
                     return true;
                 }
 
                 return false;
-            },
-            true);
-
-
-        /* Folders */
-
-        static const std::string dirsSetting { "hex.builtin.setting.folders" };
-
-        ContentRegistry::Settings::addCategoryDescription(dirsSetting, "hex.builtin.setting.folders.description");
-
-        ContentRegistry::Settings::add(dirsSetting, dirsSetting, std::vector<std::string> {}, [](auto name, nlohmann::json &setting) {
-            hex::unused(name);
-
-            static size_t currentItemIndex = [&setting] {loadUserFoldersFromSetting(setting); return 0; }();
-
-            auto saveToSetting = [&setting] {
-                std::vector<std::string> folderStrings;
-                for (const auto &folder : userFolders) {
-                    auto utfString = folder.u8string();
-                    // JSON stores char8_t as array, char8_t is not supported as of now
-                    folderStrings.emplace_back(reinterpret_cast<const char *>(&utfString.front()), reinterpret_cast<const char *>(std::next(&utfString.back())));
-                }
-                setting = folderStrings;
-                ImHexApi::System::setAdditionalFolderPaths(userFolders);
-            };
-
-            bool result = false;
-
-            if (!ImGui::BeginListBox("", ImVec2(-38, -FLT_MIN))) {
-                return false;
-            } else {
-                for (size_t n = 0; n < userFolders.size(); n++) {
-                    const bool isSelected = (currentItemIndex == n);
-                    if (ImGui::Selectable(hex::toUTF8String(userFolders.at(n)).c_str(), isSelected)) { currentItemIndex = n; }
-                    if (isSelected) { ImGui::SetItemDefaultFocus(); }
-                }
-                ImGui::EndListBox();
             }
-            ImGui::SameLine();
-            ImGui::BeginGroup();
 
-            if (ImGui::IconButton(ICON_VS_NEW_FOLDER, ImGui::GetCustomColorVec4(ImGuiCustomCol_DescButton), ImVec2(30, 30))) {
-                fs::openFileBrowser(fs::DialogMode::Folder, {}, [&](const std::fs::path &path) {
-                    if (std::find(userFolders.begin(), userFolders.end(), path) == userFolders.end()) {
-                        userFolders.emplace_back(path);
-                        saveToSetting();
-                        result = true;
-                    }
-                });
+            void load(const nlohmann::json &data) override {
+                if (data.is_number())
+                    m_value = data.get<int>();
             }
-            ImGui::InfoTooltip("hex.builtin.setting.folders.add_folder"_lang);
 
-            if (ImGui::IconButton(ICON_VS_REMOVE_CLOSE, ImGui::GetCustomColorVec4(ImGuiCustomCol_DescButton), ImVec2(30, 30))) {
-                if (!userFolders.empty()) {
-                    userFolders.erase(std::next(userFolders.begin(), currentItemIndex));
-                    saveToSetting();
-
-                    result = true;
-                }
+            nlohmann::json store() override {
+                return m_value;
             }
-            ImGui::InfoTooltip("hex.builtin.setting.folders.remove_folder"_lang);
 
-            ImGui::EndGroup();
+        private:
+            int m_value = 60;
+        };
 
-            return result;
-        });
-
-        /* Proxy */
-
-        static const std::string proxySetting { "hex.builtin.setting.proxy" };
-
-        // init hex::Net proxy url
-        hex::Net::setProxy(ContentRegistry::Settings::read(proxySetting, "hex.builtin.setting.proxy.url", ""));
-
-        ContentRegistry::Settings::addCategoryDescription(proxySetting, "hex.builtin.setting.proxy.description");
-
-        ContentRegistry::Settings::add(
-            proxySetting, "hex.builtin.setting.proxy.url", "", [](auto name, nlohmann::json &setting) {
-                static std::string proxyUrl = static_cast<std::string>(setting);
-                static bool enableProxy     = !proxyUrl.empty();
-
+        class UserFolderWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            bool draw(const std::string &) override {
                 bool result = false;
 
-                if (ImGui::Checkbox("hex.builtin.setting.proxy.enable"_lang, &enableProxy)) {
-                    setting = enableProxy ? proxyUrl : "";
-                    hex::Net::setProxy(enableProxy ? proxyUrl : "");
-                    result = true;
+                if (!ImGui::BeginListBox("##UserFolders", ImVec2(-40_scaled, 280_scaled))) {
+                    return false;
+                } else {
+                    for (size_t n = 0; n < m_paths.size(); n++) {
+                        ImGui::PushID(n + 1);
+                        const bool isSelected = (m_itemIndex == n);
+                        if (ImGui::Selectable(wolv::util::toUTF8String(m_paths[n]).c_str(), isSelected)) {
+                            m_itemIndex = n;
+                        }
+
+                        if (isSelected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+
+                        ImGui::PopID();
+                    }
+                    ImGui::EndListBox();
+                }
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+
+                if (ImGuiExt::IconButton(ICON_VS_NEW_FOLDER, ImGui::GetStyleColorVec4(ImGuiCol_Text), ImVec2(30, 30))) {
+                    fs::openFileBrowser(fs::DialogMode::Folder, {}, [&](const std::fs::path &path) {
+                        if (std::find(m_paths.begin(), m_paths.end(), path) == m_paths.end()) {
+                            m_paths.emplace_back(path);
+                            ImHexApi::System::setAdditionalFolderPaths(m_paths);
+
+                            result = true;
+                        }
+                    });
+                }
+                ImGuiExt::InfoTooltip("hex.builtin.setting.folders.add_folder"_lang);
+
+                if (ImGuiExt::IconButton(ICON_VS_REMOVE_CLOSE, ImGui::GetStyleColorVec4(ImGuiCol_Text), ImVec2(30, 30))) {
+                    if (!m_paths.empty()) {
+                        m_paths.erase(std::next(m_paths.begin(), m_itemIndex));
+                        ImHexApi::System::setAdditionalFolderPaths(m_paths);
+
+                        result = true;
+                    }
+                }
+                ImGuiExt::InfoTooltip("hex.builtin.setting.folders.remove_folder"_lang);
+
+                ImGui::EndGroup();
+
+                return result;
+            }
+
+            void load(const nlohmann::json &data) override {
+                if (data.is_array()) {
+                    std::vector<std::string> pathStrings = data;
+
+                    m_paths.clear();
+                    for (const auto &pathString : pathStrings) {
+                        m_paths.emplace_back(pathString);
+                    }
+
+                    ImHexApi::System::setAdditionalFolderPaths(m_paths);
+                }
+            }
+
+            nlohmann::json store() override {
+                std::vector<std::string> pathStrings;
+
+                for (const auto &path : m_paths) {
+                    pathStrings.push_back(wolv::io::fs::toNormalizedPathString(path));
                 }
 
-                ImGui::BeginDisabled(!enableProxy);
-                if (ImGui::InputText("##proxy_url", proxyUrl)) {
-                    setting = proxyUrl;
-                    hex::Net::setProxy(proxyUrl);
-                    result = true;
+                return pathStrings;
+            }
+
+        private:
+            u32 m_itemIndex = 0;
+            std::vector<std::fs::path> m_paths;
+        };
+
+        class ScalingWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            bool draw(const std::string &name) override {
+                auto format = [this] -> std::string {
+                    if (m_value == 0)
+                        return hex::format("{} (x{:.1f})", "hex.builtin.setting.interface.scaling.native"_lang, ImHexApi::System::getNativeScale());
+                    else
+                        return "x%.1f";
+                }();
+
+                bool changed = ImGui::SliderFloat(name.data(), &m_value, 0, 4, format.c_str());
+
+                if (m_value < 0)
+                    m_value = 0;
+                else if (m_value > 10)
+                    m_value = 10;
+
+                if (s_showScalingWarning && (u32(m_value * 10) % 10) != 0) {
+                    ImGui::SameLine();
+                    ImGuiExt::HelpHover("hex.builtin.setting.interface.scaling.fractional_warning"_lang, ICON_VS_WARNING, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_ToolbarRed));
+                }
+
+                return changed;
+            }
+
+            void load(const nlohmann::json &data) override {
+                if (data.is_number())
+                    m_value = data.get<float>();
+            }
+
+            nlohmann::json store() override {
+                return m_value;
+            }
+
+            float getValue() const {
+                return m_value;
+            }
+
+        private:
+            float m_value = 0.0F;
+        };
+
+        class AutoBackupWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            bool draw(const std::string &name) override {
+                auto format = [this] -> std::string {
+                    auto value = m_value * 30;
+                    if (value == 0)
+                        return "hex.ui.common.off"_lang;
+                    else if (value < 60)
+                        return hex::format("hex.builtin.setting.general.auto_backup_time.format.simple"_lang, value);
+                    else
+                        return hex::format("hex.builtin.setting.general.auto_backup_time.format.extended"_lang, value / 60, value % 60);
+                }();
+
+                if (ImGui::SliderInt(name.data(), &m_value, 0, (30 * 60) / 30, format.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
+                    return true;
+                }
+
+                return false;
+            }
+
+            void load(const nlohmann::json &data) override {
+                if (data.is_number())
+                    m_value = data.get<int>();
+            }
+
+            nlohmann::json store() override {
+                return m_value;
+            }
+
+        private:
+            int m_value = 5 * 2;
+        };
+
+        class KeybindingWidget : public ContentRegistry::Settings::Widgets::Widget {
+        public:
+            KeybindingWidget(View *view, const Shortcut &shortcut, const std::vector<UnlocalizedString> &fullName)
+                : m_view(view), m_shortcut(shortcut), m_drawShortcut(shortcut), m_defaultShortcut(shortcut), m_fullName(fullName) {}
+
+            bool draw(const std::string &name) override {
+                std::ignore = name;
+
+                std::string label;
+
+                if (!m_editing)
+                    label = m_drawShortcut.toString();
+                else
+                    label = "...";
+
+                if (label.empty())
+                    label = "???";
+
+
+                if (m_hasDuplicate)
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGuiExt::GetCustomColorVec4(ImGuiCustomCol_LoggerError));
+
+                ImGui::PushID(this);
+                if (ImGui::Button(label.c_str(), ImVec2(250_scaled, 0))) {
+                    m_editing = !m_editing;
+
+                    if (m_editing)
+                        ShortcutManager::pauseShortcuts();
+                    else
+                        ShortcutManager::resumeShortcuts();
+                }
+
+                ImGui::SameLine();
+
+                if (m_hasDuplicate)
+                    ImGui::PopStyleColor();
+
+                bool settingChanged = false;
+
+                ImGui::BeginDisabled(m_drawShortcut.matches(m_defaultShortcut));
+                if (ImGui::Button("X", ImGui::GetStyle().FramePadding * 2 + ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()))) {
+                    this->reset();
+                    if (!m_hasDuplicate) {
+                        m_shortcut = m_defaultShortcut;
+                        settingChanged = true;
+                    }
+
                 }
                 ImGui::EndDisabled();
 
-                ImGui::InfoTooltip("hex.builtin.setting.proxy.url.tooltip"_lang);
+                if (!ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    m_editing = false;
+                    ShortcutManager::resumeShortcuts();
+                }
 
                 ImGui::SameLine();
 
-                ImGui::TextFormatted("{}", name);
-                return result;
-            },
-            false);
-    }
+                std::string fullName;
+                for (u32 i = m_fullName.size() == 1 ? 0 : 1; i < m_fullName.size(); i += 1) {
+                    const auto &part = m_fullName[i];
+                    fullName += Lang(part).get();
+                    fullName += " -> ";
+                }
+                if (fullName.size() >= 4)
+                    fullName = fullName.substr(0, fullName.size() - 4);
+
+                ImGuiExt::TextFormatted("{}", fullName);
+
+                ImGui::PopID();
+
+                if (m_editing) {
+                    if (this->detectShortcut()) {
+                        m_editing = false;
+                        ShortcutManager::resumeShortcuts();
+
+                        settingChanged = true;
+                        if (!m_hasDuplicate) {
+
+                        }
+                    }
+                }
+
+                return settingChanged;
+            }
+
+            void load(const nlohmann::json &data) override {
+                std::set<Key> keys;
+
+                for (const auto &key : data.get<std::vector<u32>>())
+                    keys.insert(Key(Keys(key)));
+
+                if (keys.empty())
+                    return;
+
+                auto newShortcut = Shortcut(keys);
+                m_hasDuplicate = !ShortcutManager::updateShortcut(m_shortcut, newShortcut, m_view);
+                m_shortcut = std::move(newShortcut);
+                m_drawShortcut = m_shortcut;
+            }
+
+            nlohmann::json store() override {
+                std::vector<u32> keys;
+
+                for (const auto &key : m_shortcut.getKeys()) {
+                    if (key != CurrentView)
+                        keys.push_back(key.getKeyCode());
+                }
+
+                return keys;
+            }
+
+            void reset() {
+                m_hasDuplicate = !ShortcutManager::updateShortcut(m_shortcut, m_defaultShortcut, m_view);
+
+                m_drawShortcut = m_defaultShortcut;
+                m_shortcut = m_defaultShortcut;
+            }
+
+        private:
+            bool detectShortcut() {
+                if (const auto &shortcut = ShortcutManager::getPreviousShortcut(); shortcut.has_value()) {
+                    auto keys = m_shortcut.getKeys();
+                    std::erase_if(keys, [](Key key) {
+                        return key != AllowWhileTyping && key != CurrentView;
+                    });
+
+                    for (const auto &key : shortcut->getKeys()) {
+                        keys.insert(key);
+                    }
+
+                    auto newShortcut = Shortcut(std::move(keys));
+                    m_hasDuplicate = !ShortcutManager::updateShortcut(m_shortcut, newShortcut, m_view);
+                    m_drawShortcut = std::move(newShortcut);
+
+                    if (!m_hasDuplicate) {
+                        m_shortcut = m_drawShortcut;
+                        log::info("Changed shortcut to {}", shortcut->toString());
+                    } else {
+                        log::warn("Changing shortcut failed as it overlapped with another one", shortcut->toString());
+                    }
+
+                    return true;
+                }
+
+                return false;
+            }
+
+        private:
+            View *m_view = nullptr;
+            Shortcut m_shortcut, m_drawShortcut, m_defaultShortcut;
+            std::vector<UnlocalizedString> m_fullName;
+            bool m_editing = false;
+            bool m_hasDuplicate = false;
+        };
+
+        class ToolbarIconsWidget : public ContentRegistry::Settings::Widgets::Widget {
+        private:
+            struct MenuItemSorter {
+                bool operator()(const auto *a, const auto *b) const {
+                    return a->toolbarIndex < b->toolbarIndex;
+                }
+            };
+
+        public:
+            bool draw(const std::string &) override {
+                bool changed = false;
+
+                // Top level layout table
+                if (ImGui::BeginTable("##top_level", 2, ImGuiTableFlags_None, ImGui::GetContentRegionAvail())) {
+                    ImGui::TableSetupColumn("##left", ImGuiTableColumnFlags_WidthStretch, 0.3F);
+                    ImGui::TableSetupColumn("##right", ImGuiTableColumnFlags_WidthStretch, 0.7F);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+
+                    // Draw list of menu items that can be added to the toolbar
+                    if (ImGui::BeginTable("##all_icons", 1, ImGuiTableFlags_BordersOuter | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 280_scaled))) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+
+                        // Loop over all available menu items
+                        for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItems()) {
+                            // Filter out items without icon, separators, submenus and items that are already in the toolbar
+
+                            if (menuItem.icon.glyph.empty())
+                                continue;
+
+                            const auto &unlocalizedName = menuItem.unlocalizedNames.back();
+                            if (menuItem.unlocalizedNames.size() > 2)
+                                continue;
+                            if (unlocalizedName.get() == ContentRegistry::Interface::impl::SeparatorValue)
+                                continue;
+                            if (unlocalizedName.get() == ContentRegistry::Interface::impl::SubMenuValue)
+                                continue;
+                            if (menuItem.toolbarIndex != -1)
+                                continue;
+
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+
+                            // Draw the menu item
+                            ImGui::Selectable(hex::format("{} {}", menuItem.icon.glyph, Lang(unlocalizedName)).c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+
+                            // Handle draggin the menu item to the toolbar box
+                            if (ImGui::BeginDragDropSource()) {
+                                auto ptr = &menuItem;
+                                ImGui::SetDragDropPayload("MENU_ITEM_PAYLOAD", &ptr, sizeof(void*));
+
+                                ImGuiExt::TextFormatted("{} {}", menuItem.icon.glyph, Lang(unlocalizedName));
+
+                                ImGui::EndDragDropSource();
+                            }
+                        }
+
+                        ImGui::EndTable();
+                    }
+
+                    // Handle dropping menu items from the toolbar box
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (auto payload = ImGui::AcceptDragDropPayload("TOOLBAR_ITEM_PAYLOAD"); payload != nullptr) {
+                            auto &menuItem = *static_cast<ContentRegistry::Interface::impl::MenuItem **>(payload->Data);
+
+                            menuItem->toolbarIndex = -1;
+                            changed = true;
+                        }
+
+                        ImGui::EndDragDropTarget();
+                    }
+
+                    ImGui::TableNextColumn();
+
+                    // Draw toolbar icon box
+                    if (ImGuiExt::BeginSubWindow("hex.builtin.setting.toolbar.icons"_lang, nullptr, ImGui::GetContentRegionAvail())) {
+                        if (ImGui::BeginTable("##icons", 6, ImGuiTableFlags_SizingStretchSame, ImGui::GetContentRegionAvail())) {
+                            ImGui::TableNextRow();
+
+                            // Find all menu items that are in the toolbar and sort them by their toolbar index
+                            std::set<ContentRegistry::Interface::impl::MenuItem*, MenuItemSorter> toolbarItems;
+                            for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable()) {
+                                if (menuItem.toolbarIndex == -1)
+                                    continue;
+
+                                toolbarItems.emplace(&menuItem);
+                            }
+
+                            // Loop over all toolbar items
+                            for (auto &menuItem : toolbarItems) {
+                                // Filter out items without icon, separators, submenus and items that are not in the toolbar
+                                if (menuItem->icon.glyph.empty())
+                                    continue;
+
+                                const auto &unlocalizedName = menuItem->unlocalizedNames.back();
+                                if (menuItem->unlocalizedNames.size() > 2)
+                                    continue;
+                                if (unlocalizedName.get() == ContentRegistry::Interface::impl::SubMenuValue)
+                                    continue;
+                                if (menuItem->toolbarIndex == -1)
+                                    continue;
+
+                                ImGui::TableNextColumn();
+
+                                // Draw the toolbar item
+                                ImGui::InvisibleButton(unlocalizedName.get().c_str(), ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().x));
+
+                                // Handle dragging the toolbar item around
+                                if (ImGui::BeginDragDropSource()) {
+                                    ImGui::SetDragDropPayload("TOOLBAR_ITEM_PAYLOAD", &menuItem, sizeof(void*));
+
+                                    ImGuiExt::TextFormatted("{} {}", menuItem->icon.glyph, Lang(unlocalizedName));
+
+                                    ImGui::EndDragDropSource();
+                                }
+
+                                // Handle dropping toolbar items onto each other to reorder them
+                                if (ImGui::BeginDragDropTarget()) {
+                                    if (auto payload = ImGui::AcceptDragDropPayload("TOOLBAR_ITEM_PAYLOAD"); payload != nullptr) {
+                                        auto &otherMenuItem = *static_cast<ContentRegistry::Interface::impl::MenuItem **>(payload->Data);
+
+                                        std::swap(menuItem->toolbarIndex, otherMenuItem->toolbarIndex);
+                                        changed = true;
+                                    }
+
+                                    ImGui::EndDragDropTarget();
+                                }
+
+                                // Handle right clicking toolbar items to open the color selection popup
+                                if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                                    ImGui::OpenPopup(unlocalizedName.get().c_str());
+
+                                // Draw the color selection popup
+                                if (ImGui::BeginPopup(unlocalizedName.get().c_str())) {
+                                    constexpr static std::array Colors = {
+                                        ImGuiCustomCol_ToolbarGray,
+                                        ImGuiCustomCol_ToolbarRed,
+                                        ImGuiCustomCol_ToolbarYellow,
+                                        ImGuiCustomCol_ToolbarGreen,
+                                        ImGuiCustomCol_ToolbarBlue,
+                                        ImGuiCustomCol_ToolbarPurple,
+                                        ImGuiCustomCol_ToolbarBrown
+                                    };
+
+                                    // Draw all the color buttons
+                                    for (auto color : Colors) {
+                                        ImGui::PushID(&color);
+                                        if (ImGui::ColorButton(hex::format("##color{}", u32(color)).c_str(), ImGuiExt::GetCustomColorVec4(color), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoPicker, ImVec2(20, 20))) {
+                                            menuItem->icon.color = color;
+                                            ImGui::CloseCurrentPopup();
+                                            changed = true;
+                                        }
+                                        ImGui::PopID();
+                                        ImGui::SameLine();
+                                    }
+
+                                    ImGui::EndPopup();
+                                }
+
+                                auto min = ImGui::GetItemRectMin();
+                                auto max = ImGui::GetItemRectMax();
+                                auto iconSize = ImGui::CalcTextSize(menuItem->icon.glyph.c_str());
+
+                                std::string text = Lang(unlocalizedName);
+                                if (text.ends_with("..."))
+                                    text = text.substr(0, text.size() - 3);
+
+                                auto textSize = ImGui::CalcTextSize(text.c_str());
+
+                                // Draw icon and text of the toolbar item
+                                auto drawList = ImGui::GetWindowDrawList();
+                                drawList->AddText((min + ((max - min) - iconSize) / 2) - ImVec2(0, 10_scaled), ImGuiExt::GetCustomColorU32(ImGuiCustomCol(menuItem->icon.color)), menuItem->icon.glyph.c_str());
+                                drawList->AddText((min + ((max - min)) / 2) + ImVec2(-textSize.x / 2, 5_scaled), ImGui::GetColorU32(ImGuiCol_Text), text.c_str());
+                            }
+
+                            ImGui::EndTable();
+                        }
+
+                    }
+                    ImGuiExt::EndSubWindow();
+
+                    // Handle dropping menu items onto the toolbar box
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (auto payload = ImGui::AcceptDragDropPayload("MENU_ITEM_PAYLOAD"); payload != nullptr) {
+                            auto &menuItem = *static_cast<ContentRegistry::Interface::impl::MenuItem **>(payload->Data);
+
+                            menuItem->toolbarIndex = m_currIndex;
+                            m_currIndex += 1;
+                            changed = true;
+                        }
+
+                        ImGui::EndDragDropTarget();
+                    }
+
+                    ImGui::EndTable();
+                }
+
+                if (changed) {
+                    ContentRegistry::Interface::updateToolbarItems();
+                }
+
+                return changed;
+            }
+
+            nlohmann::json store() override {
+                std::map<i32, std::pair<std::string, u32>> items;
+
+                for (const auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItems()) {
+                    if (menuItem.toolbarIndex != -1)
+                        items.emplace(menuItem.toolbarIndex, std::make_pair(menuItem.unlocalizedNames.back().get(), menuItem.icon.color));
+                }
+
+                return items;
+            }
+
+            void load(const nlohmann::json &data) override {
+                if (data.is_null())
+                    return;
+
+                for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable())
+                    menuItem.toolbarIndex = -1;
+
+                auto toolbarItems = data.get<std::map<i32, std::pair<std::string, u32>>>();
+                if (toolbarItems.empty())
+                    return;
+
+                for (auto &[priority, menuItem] : ContentRegistry::Interface::impl::getMenuItemsMutable()) {
+                    for (const auto &[index, value] : toolbarItems) {
+                        const auto &[name, color] = value;
+                        if (menuItem.unlocalizedNames.back().get() == name) {
+                            menuItem.toolbarIndex = index;
+                            menuItem.icon.color   = ImGuiCustomCol(color);
+                            break;
+                        }
+                    }
+                }
+
+                m_currIndex = toolbarItems.size();
+
+                ContentRegistry::Interface::updateToolbarItems();
+            }
+
+        private:
+            i32 m_currIndex = 0;
+        };
+
+        class FontFilePicker : public ContentRegistry::Settings::Widgets::FilePicker {
+        public:
+            bool draw(const std::string &name) override {
+                bool changed = false;
+
+                const auto &fonts = hex::getFonts();
+                const bool pixelPerfectFont = ContentRegistry::Settings::read<bool>("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", true);
+
+                bool customFont = false;
+                std::string pathPreview = "";
+                if (m_path.empty() && pixelPerfectFont) {
+                    pathPreview = "Pixel-Perfect Default Font (Proggy Clean)";
+                } else if (m_path.empty() && !pixelPerfectFont) {
+                    pathPreview = "Smooth Default Font (JetbrainsMono)";
+                } else if (fonts.contains(m_path)) {
+                    pathPreview = fonts.at(m_path);
+                } else {
+                    pathPreview = wolv::util::toUTF8String(m_path.filename());
+                    customFont = true;
+                }
+
+                if (ImGui::BeginCombo(name.c_str(), pathPreview.c_str())) {
+
+                    if (ImGui::Selectable("Pixel-Perfect Default Font (Proggy Clean)", m_path.empty() && pixelPerfectFont)) {
+                        m_path.clear();
+                        changed = true;
+                        ContentRegistry::Settings::write<bool>("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", true);
+                    }
+
+                    if (ImGui::Selectable("Smooth Default Font (JetbrainsMono)", m_path.empty() && !pixelPerfectFont)) {
+                        m_path.clear();
+                        changed = true;
+                        ContentRegistry::Settings::write<bool>("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", false);
+                    }
+
+                    if (ImGui::Selectable("Custom Font", customFont)) {
+                        changed = fs::openFileBrowser(fs::DialogMode::Open, { { "TTF Font", "ttf" }, { "OTF Font", "otf" } }, [this](const std::fs::path &path) {
+                            m_path = path;
+                        });
+                    }
+
+                    for (const auto &[path, fontName] : fonts) {
+                        if (ImGui::Selectable(fontName.c_str(), m_path == path)) {
+                            m_path = path;
+                            changed = true;
+                        }
+                    }
+
+                    ImGui::EndCombo();
+                }
+
+                return changed;
+            }
+        };
+
+        class SliderPoints : public ContentRegistry::Settings::Widgets::SliderFloat {
+        public:
+            SliderPoints(float defaultValue, float min, float max) : SliderFloat(defaultValue, min, max) { }
+            bool draw(const std::string &name) override {
+                float value = pixelsToPoints(m_value);
+                float min = pixelsToPoints(m_min);
+                float max = pixelsToPoints(m_max);
+
+                auto changed = ImGui::SliderFloat(name.c_str(), &value, min, max, "%.0f pt");
+
+                m_value = pointsToPixels(value);
+
+                return changed;
+            }
+
+        private:
+            static float pixelsToPoints(float pixels) {
+                return pixels * (72_scaled / 96.0F);
+            }
+
+            static float pointsToPixels(float points) {
+                return points / (72_scaled / 96.0F);
+            }
+        };
 
 
-    static void loadInterfaceScalingSetting() {
-        float interfaceScaling = 1.0F;
-        switch (ContentRegistry::Settings::read("hex.builtin.setting.interface", "hex.builtin.setting.interface.scaling", 0)) {
-            default:
-            case 0:
-                interfaceScaling = ImHexApi::System::getNativeScale();
-                break;
-            case 1:
-                interfaceScaling = 0.5F;
-                break;
-            case 2:
-                interfaceScaling = 1.0F;
-                break;
-            case 3:
-                interfaceScaling = 1.5F;
-                break;
-            case 4:
-                interfaceScaling = 2.0F;
-                break;
-            case 5:
-                interfaceScaling = 3.0F;
-                break;
-            case 6:
-                interfaceScaling = 4.0F;
-                break;
+        bool getDefaultBorderlessWindowMode() {
+            bool result;
+
+            #if defined (OS_WINDOWS)
+                result = true;
+
+                // Intel's OpenGL driver is extremely buggy. Its issues can manifest in lots of different ways
+                // such as "colorful snow" appearing on the screen or, the most annoying issue,
+                // it might draw the window content slightly offset to the bottom right as seen in issue #1625
+
+                // The latter issue can be circumvented by using the native OS decorations or by using the software renderer.
+                // This code here tries to detect if the user has a problematic Intel GPU and if so, it will default to the native OS decorations.
+                // This doesn't actually solve the issue at all but at least it makes ImHex usable on these GPUs.
+                const bool isIntelGPU = hex::containsIgnoreCase(ImHexApi::System::getGPUVendor(), "Intel");
+                if (isIntelGPU) {
+                    log::warn("Intel GPU detected! Intel's OpenGL GPU drivers are extremely buggy and can cause issues when using ImHex. If you experience any rendering bugs, please enable the Native OS Decoration setting or try the software rendererd -NoGPU release.");
+
+                    // Non-exhaustive list of bad GPUs.
+                    // If more GPUs are found to be problematic, they can be added here.
+                    constexpr static std::array BadGPUs = {
+                        // Sandy Bridge Series, Second Gen HD Graphics
+                        "HD Graphics 2000",
+                        "HD Graphics 3000"
+                    };
+
+                    const auto &glRenderer = ImHexApi::System::getGLRenderer();
+                    for (const auto &badGPU : BadGPUs) {
+                        if (hex::containsIgnoreCase(glRenderer, badGPU)) {
+                            result = false;
+                            break;
+                        }
+                    }
+                }
+
+            #elif defined(OS_MACOS)
+                result = true;
+            #elif defined(OS_LINUX)
+                // On Linux, things like Window snapping and moving is hard to implement
+                // without hacking e.g. libdecor, therefor we default to the native window decorations.
+                result = false;
+            #else
+                result = false;
+            #endif
+
+            return result;
         }
 
-        ImHexApi::System::impl::setGlobalScale(interfaceScaling);
     }
 
-    static void loadFontSettings() {
-        std::fs::path fontFile = ContentRegistry::Settings::read("hex.builtin.setting.font", "hex.builtin.setting.font.font_path", "");
-        if (!fs::exists(fontFile) || !fs::isRegularFile(fontFile))
-            fontFile.clear();
+    void registerSettings() {
+        namespace Widgets = ContentRegistry::Settings::Widgets;
 
-        // If no custom font has been specified, search for a file called "font.ttf" in one of the resource folders
-        if (fontFile.empty()) {
-            for (const auto &dir : fs::getDefaultPaths(fs::ImHexPath::Resources)) {
-                auto path = dir / "font.ttf";
-                if (fs::exists(path)) {
-                    log::info("Loading custom front from {}", hex::toUTF8String(path));
+        /* General */
+        {
 
-                    fontFile = path;
-                    break;
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "", "hex.builtin.setting.general.show_tips", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "", "hex.builtin.setting.general.save_recent_providers", true);
+            ContentRegistry::Settings::add<AutoBackupWidget>("hex.builtin.setting.general", "", "hex.builtin.setting.general.auto_backup_time");
+            ContentRegistry::Settings::add<Widgets::SliderDataSize>("hex.builtin.setting.general", "", "hex.builtin.setting.general.max_mem_file_size", 512_MiB, 0_bytes, 32_GiB, 1_MiB)
+                .setTooltip("hex.builtin.setting.general.max_mem_file_size.desc");
+            ContentRegistry::Settings::add<Widgets::SliderInteger>("hex.builtin.setting.general", "hex.builtin.setting.general.patterns", "hex.builtin.setting.general.pattern_data_max_filter_items", 128, 32, 1024);
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.patterns", "hex.builtin.setting.general.auto_load_patterns", true);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.patterns", "hex.builtin.setting.general.sync_pattern_source", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.network", "hex.builtin.setting.general.network_interface", false);
+
+            #if !defined(OS_WEB)
+                ContentRegistry::Settings::add<ServerContactWidget>("hex.builtin.setting.general", "hex.builtin.setting.general.network", "hex.builtin.setting.general.server_contact");
+                ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.general", "hex.builtin.setting.general.network", "hex.builtin.setting.general.upload_crash_logs", true);
+            #endif
+        }
+
+        /* Interface */
+        {
+            auto themeNames = ThemeManager::getThemeNames();
+            std::vector<nlohmann::json> themeJsons = { };
+            for (const auto &themeName : themeNames)
+                themeJsons.emplace_back(themeName);
+
+            themeNames.emplace(themeNames.begin(), ThemeManager::NativeTheme);
+            themeJsons.emplace(themeJsons.begin(), ThemeManager::NativeTheme);
+
+            ContentRegistry::Settings::add<Widgets::DropDown>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.color",
+                                                              themeNames,
+                                                              themeJsons,
+                                                              "Dark").setChangedCallback([](auto &widget) {
+                                                                  auto dropDown = static_cast<Widgets::DropDown *>(&widget);
+
+                                                                  if (dropDown->getValue() == ThemeManager::NativeTheme)
+                                                                      ImHexApi::System::enableSystemThemeDetection(true);
+                                                                  else {
+                                                                      ImHexApi::System::enableSystemThemeDetection(false);
+                                                                      ThemeManager::changeTheme(dropDown->getValue());
+                                                                  }
+                                                              });
+
+            ContentRegistry::Settings::add<Widgets::ColorPicker>(
+                "hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.accent",
+                ImGui::GetStyleColorVec4(ImGuiCol_Button),
+                ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoInputs
+            )
+            .setChangedCallback([](auto &widget) {
+                auto colorPicker = static_cast<Widgets::ColorPicker *>(&widget);
+                ThemeManager::setAccentColor(colorPicker->getColor());
+            });
+
+            ContentRegistry::Settings::add<ScalingWidget>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.scaling_factor")
+            .requiresRestart();
+
+            #if defined (OS_WEB)
+                ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.crisp_scaling", false)
+                .setChangedCallback([](Widgets::Widget &widget) {
+                    auto checkBox = static_cast<Widgets::Checkbox *>(&widget);
+
+                    EM_ASM({
+                        var canvas = document.getElementById('canvas');
+                        if ($0)
+                            canvas.style.imageRendering = 'pixelated';
+                        else
+                            canvas.style.imageRendering = 'smooth';
+                    }, checkBox->isChecked());
+                });
+            #endif
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.pattern_data_row_bg", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.always_show_provider_tabs", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.show_header_command_palette", true);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.style", "hex.builtin.setting.interface.display_shortcut_highlights", true);
+
+            std::vector<std::string> languageNames;
+            std::vector<nlohmann::json> languageCodes;
+
+            for (auto &[languageCode, languageName] : LocalizationManager::getSupportedLanguages()) {
+                languageNames.emplace_back(languageName);
+                languageCodes.emplace_back(languageCode);
+            }
+
+            ContentRegistry::Settings::add<Widgets::DropDown>("hex.builtin.setting.interface", "hex.builtin.setting.interface.language", "hex.builtin.setting.interface.language", languageNames, languageCodes, "en-US");
+
+            ContentRegistry::Settings::add<Widgets::TextBox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.language", "hex.builtin.setting.interface.wiki_explain_language", "en");
+            ContentRegistry::Settings::add<FPSWidget>("hex.builtin.setting.interface", "hex.builtin.setting.interface.window", "hex.builtin.setting.interface.fps");
+
+            #if defined (OS_LINUX)
+                constexpr static auto MultiWindowSupportEnabledDefault = 0;
+            #else
+                constexpr static auto MultiWindowSupportEnabledDefault = 1;
+            #endif
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.window", "hex.builtin.setting.interface.multi_windows", MultiWindowSupportEnabledDefault).requiresRestart();
+
+            #if !defined(OS_WEB)
+                ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.window", "hex.builtin.setting.interface.native_window_decorations", !getDefaultBorderlessWindowMode()).requiresRestart();
+            #endif
+
+            #if defined (OS_MACOS)
+                ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.window", "hex.builtin.setting.interface.use_native_menu_bar", true);
+            #endif
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.interface", "hex.builtin.setting.interface.window", "hex.builtin.setting.interface.restore_window_pos", false);
+
+            ContentRegistry::Settings::add<Widgets::ColorPicker>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.highlight_color", ImColor(0x80, 0x80, 0xC0, 0x60));
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.sync_scrolling", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.show_selection", false);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.show_highlights", true);
+            ContentRegistry::Settings::add<Widgets::SliderInteger>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.byte_padding", 0, 0, 50);
+            ContentRegistry::Settings::add<Widgets::SliderInteger>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.char_padding", 0, 0, 50);
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.pattern_parent_highlighting", true);
+
+            std::vector<std::string> pasteBehaviourNames = { "Ask me next time", "Paste everything", "Paste over selection" };
+            std::vector<nlohmann::json> pasteBehaviourValues = { "none", "everything", "selection" };
+            ContentRegistry::Settings::add<Widgets::DropDown>("hex.builtin.setting.hex_editor", "", "hex.builtin.setting.hex_editor.paste_behaviour",
+                                                              pasteBehaviourNames,
+                                                              pasteBehaviourValues,
+                                                              "none");
+        }
+
+        /* Fonts */
+        {
+            const auto scaleWarningHandler = [](auto&) {
+                s_showScalingWarning = ImHexApi::Fonts::getCustomFontPath().empty() &&
+                    ContentRegistry::Settings::read<bool>("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", true);
+            };
+            ContentRegistry::Settings::onChange("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", scaleWarningHandler);
+
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.font", "hex.builtin.setting.font.glyphs", "hex.builtin.setting.font.load_all_unicode_chars", false)
+                .requiresRestart();
+
+            auto customFontEnabledSetting = ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.custom_font_enable", false).requiresRestart();
+
+            const auto customFontsEnabled = [customFontEnabledSetting] {
+                auto &customFontsEnabled = static_cast<Widgets::Checkbox &>(customFontEnabledSetting.getWidget());
+
+                return customFontsEnabled.isChecked();
+            };
+
+            auto customFontPathSetting = ContentRegistry::Settings::add<FontFilePicker>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.font_path")
+                    .requiresRestart()
+                    .setChangedCallback(scaleWarningHandler)
+                    .setEnabledCallback(customFontsEnabled);
+
+            const auto customFontSettingsEnabled = [customFontEnabledSetting, customFontPathSetting] {
+                auto &customFontsEnabled = static_cast<Widgets::Checkbox &>(customFontEnabledSetting.getWidget());
+                const bool pixelPerfectFont = ContentRegistry::Settings::read<bool>("hex.builtin.setting.font", "hex.builtin.setting.font.pixel_perfect_default_font", true);
+
+                return customFontsEnabled.isChecked() && !pixelPerfectFont;
+            };
+
+            ContentRegistry::Settings::add<Widgets::Label>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.custom_font_info")
+                    .setEnabledCallback(customFontsEnabled);
+
+
+            ContentRegistry::Settings::add<SliderPoints>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.font_size", 16, 2, 100)
+                    .requiresRestart()
+                    .setEnabledCallback(customFontSettingsEnabled);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.font_bold", false)
+                    .requiresRestart()
+                    .setEnabledCallback(customFontSettingsEnabled);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.font_italic", false)
+                    .requiresRestart()
+                    .setEnabledCallback(customFontSettingsEnabled);
+            ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.font", "hex.builtin.setting.font.custom_font", "hex.builtin.setting.font.font_antialias", true)
+                    .requiresRestart()
+                    .setEnabledCallback(customFontSettingsEnabled);
+        }
+
+        /* Folders */
+        {
+            ContentRegistry::Settings::setCategoryDescription("hex.builtin.setting.folders", "hex.builtin.setting.folders.description");
+            ContentRegistry::Settings::add<UserFolderWidget>("hex.builtin.setting.folders", "", "hex.builtin.setting.folders.description");
+        }
+
+        /* Proxy */
+        {
+            HttpRequest::setProxyUrl(ContentRegistry::Settings::read<std::string>("hex.builtin.setting.proxy", "hex.builtin.setting.proxy.url", ""));
+
+            ContentRegistry::Settings::setCategoryDescription("hex.builtin.setting.proxy", "hex.builtin.setting.proxy.description");
+
+            auto proxyEnabledSetting = ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.proxy", "", "hex.builtin.setting.proxy.enable", false)
+            .setChangedCallback([](Widgets::Widget &widget) {
+                auto checkBox = static_cast<Widgets::Checkbox *>(&widget);
+
+                HttpRequest::setProxyState(checkBox->isChecked());
+            });
+
+            ContentRegistry::Settings::add<Widgets::TextBox>("hex.builtin.setting.proxy", "", "hex.builtin.setting.proxy.url", "")
+            .setEnabledCallback([proxyEnabledSetting] {
+                auto &checkBox = static_cast<Widgets::Checkbox &>(proxyEnabledSetting.getWidget());
+
+                return checkBox.isChecked();
+            })
+            .setChangedCallback([](Widgets::Widget &widget) {
+                auto textBox = static_cast<Widgets::TextBox *>(&widget);
+
+                HttpRequest::setProxyUrl(textBox->getValue());
+            });
+        }
+
+        /* Experiments */
+        {
+            ContentRegistry::Settings::setCategoryDescription("hex.builtin.setting.experiments", "hex.builtin.setting.experiments.description");
+            EventImHexStartupFinished::subscribe([]{
+                for (const auto &[name, experiment] : ContentRegistry::Experiments::impl::getExperiments()) {
+                    ContentRegistry::Settings::add<Widgets::Checkbox>("hex.builtin.setting.experiments", "", experiment.unlocalizedName, false)
+                        .setTooltip(experiment.unlocalizedDescription)
+                        .setChangedCallback([name](Widgets::Widget &widget) {
+                            auto checkBox = static_cast<Widgets::Checkbox *>(&widget);
+
+                            ContentRegistry::Experiments::enableExperiement(name, checkBox->isChecked());
+                        });
+                }
+            });
+        }
+
+        /* Shorcuts */
+        {
+            EventImHexStartupFinished::subscribe([] {
+                for (const auto &shortcutEntry : ShortcutManager::getGlobalShortcuts()) {
+                    ContentRegistry::Settings::add<KeybindingWidget>(
+                        "hex.builtin.setting.shortcuts",
+                        "hex.builtin.setting.shortcuts.global",
+                        shortcutEntry.unlocalizedName.back(),
+                        nullptr,
+                        shortcutEntry.shortcut,
+                        shortcutEntry.unlocalizedName
+                    );
+                }
+
+                for (auto &[viewName, view] : ContentRegistry::Views::impl::getEntries()) {
+                    for (const auto &shortcutEntry : ShortcutManager::getViewShortcuts(view.get())) {
+                        ContentRegistry::Settings::add<KeybindingWidget>(
+                            "hex.builtin.setting.shortcuts",
+                            viewName,
+                            shortcutEntry.unlocalizedName.back(),
+                            view.get(),
+                            shortcutEntry.shortcut,
+                            shortcutEntry.unlocalizedName
+                        );
+                    }
+                }
+           });
+        }
+
+        /* Toolbar icons */
+        {
+            ContentRegistry::Settings::setCategoryDescription("hex.builtin.setting.toolbar", "hex.builtin.setting.toolbar.description");
+
+            ContentRegistry::Settings::add<ToolbarIconsWidget>("hex.builtin.setting.toolbar", "", "hex.builtin.setting.toolbar.icons");
+        }
+
+        ImHexApi::System::addMigrationRoutine("v1.36.3", [] {
+            log::warn("Resetting shortcut key settings for them to work with this version of ImHex");
+
+            for (const auto &category : ContentRegistry::Settings::impl::getSettings()) {
+                for (const auto &subcategory : category.subCategories) {
+                    for (const auto &entry : subcategory.entries) {
+                        if (auto keybindingWidget = dynamic_cast<KeybindingWidget*>(entry.widget.get())) {
+                            keybindingWidget->reset();
+                            ContentRegistry::Settings::write<nlohmann::json>(category.unlocalizedName, entry.unlocalizedName, keybindingWidget->store());
+                        }
+                    }
                 }
             }
-        }
 
-        ImHexApi::System::impl::setCustomFontPath(fontFile);
+            ContentRegistry::Settings::impl::store();
+        });
+    }
 
-        // If a custom font has been loaded now, also load the font size
-        float fontSize = ImHexApi::System::DefaultFontSize * ImHexApi::System::getGlobalScale();
-        if (!fontFile.empty()) {
-            fontSize = ContentRegistry::Settings::read("hex.builtin.setting.font", "hex.builtin.setting.font.font_size", 13) * ImHexApi::System::getGlobalScale();
-        }
-
-        ImHexApi::System::impl::setFontSize(fontSize);
+    static void loadLayoutSettings() {
+        const bool locked = ContentRegistry::Settings::read<bool>("hex.builtin.setting.interface", "hex.builtin.setting.interface.layout_locked", false);
+        LayoutManager::lockLayout(locked);
     }
 
     static void loadThemeSettings() {
-        auto theme = ContentRegistry::Settings::read("hex.builtin.setting.interface", "hex.builtin.setting.interface.color", static_cast<i64>(ImHexApi::System::Theme::Dark));
+        auto theme = ContentRegistry::Settings::read<std::string>("hex.builtin.setting.interface", "hex.builtin.setting.interface.color", ThemeManager::NativeTheme);
 
-        ImHexApi::System::enableSystemThemeDetection(theme == 0);
-        ImHexApi::System::setTheme(static_cast<ImHexApi::System::Theme>(theme));
+        if (theme == ThemeManager::NativeTheme) {
+            ImHexApi::System::enableSystemThemeDetection(true);
+        } else {
+            ImHexApi::System::enableSystemThemeDetection(false);
+            ThemeManager::changeTheme(theme);
+        }
+
+        auto borderlessWindowMode = !ContentRegistry::Settings::read<bool>("hex.builtin.setting.interface", "hex.builtin.setting.interface.native_window_decorations", !getDefaultBorderlessWindowMode());
+        ImHexApi::System::impl::setBorderlessWindowMode(borderlessWindowMode);
     }
 
-    static void loadFoldersSettings() {
-        static const std::string dirsSetting { "hex.builtin.setting.folders" };
-        auto dirs = ContentRegistry::Settings::getSetting(dirsSetting, dirsSetting);
-        loadUserFoldersFromSetting(dirs);
-        ImHexApi::System::setAdditionalFolderPaths(userFolders);
+    static void loadFolderSettings() {
+        auto folderPathStrings = ContentRegistry::Settings::read<std::vector<std::string>>("hex.builtin.setting.folders", "hex.builtin.setting.folders", { });
+
+        std::vector<std::fs::path> paths;
+        for (const auto &pathString : folderPathStrings) {
+            paths.emplace_back(pathString);
+        }
+
+        ImHexApi::System::setAdditionalFolderPaths(paths);
     }
 
     void loadSettings() {
-        loadInterfaceScalingSetting();
-        loadFontSettings();
+        loadLayoutSettings();
         loadThemeSettings();
-        loadFoldersSettings();
+        loadFolderSettings();
     }
 
 }

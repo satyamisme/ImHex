@@ -1,17 +1,12 @@
 #pragma once
 
-#include <hex.hpp>
 #include <hex/ui/view.hpp>
 
 #include <ui/pattern_drawer.hpp>
-#include <hex/providers/provider.hpp>
-
-#include <vector>
-#include <tuple>
 
 namespace hex::plugin::builtin {
 
-    class ViewPatternData : public View {
+    class ViewPatternData : public View::Window {
     public:
         ViewPatternData();
         ~ViewPatternData() override;
@@ -19,8 +14,12 @@ namespace hex::plugin::builtin {
         void drawContent() override;
 
     private:
-        std::map<hex::prv::Provider *, std::vector<pl::ptrn::Pattern*>> m_sortedPatterns;
-        ui::PatternDrawer m_patternDrawer;
+        bool m_rowColoring = false;
+        u32 m_maxFilterItems = 128;
+        ui::PatternDrawer::TreeStyle m_treeStyle = ui::PatternDrawer::TreeStyle::Default;
+
+        PerProvider<std::unique_ptr<ui::PatternDrawer>> m_patternDrawer;
+        Region m_hoveredPatternRegion = Region::Invalid();
     };
 
 }

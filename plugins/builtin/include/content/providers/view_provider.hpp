@@ -1,71 +1,54 @@
 #pragma once
 
 #include <hex/providers/provider.hpp>
-#include <hex/helpers/fmt.hpp>
 
 namespace hex::plugin::builtin {
 
     class ViewProvider : public hex::prv::Provider {
     public:
-        explicit ViewProvider() = default;
+        ViewProvider() = default;
         ~ViewProvider() override = default;
 
-        [[nodiscard]] bool isAvailable() const override { return this->m_provider != nullptr; }
-        [[nodiscard]] bool isReadable()  const override { return this->m_provider->isReadable(); }
-        [[nodiscard]] bool isWritable()  const override { return this->m_provider->isWritable(); }
-        [[nodiscard]] bool isResizable() const override { return true; }
-        [[nodiscard]] bool isSavable()   const override { return true; }
+        [[nodiscard]] bool isAvailable() const override;
+        [[nodiscard]] bool isReadable() const override;
+        [[nodiscard]] bool isWritable() const override;
+        [[nodiscard]] bool isResizable() const override;
+        [[nodiscard]] bool isSavable() const override;
+        [[nodiscard]] bool isSavableAsRecent() const override;
 
-        void save() override {
-            this->m_provider->save();
-        }
+        void save() override;
+        [[nodiscard]] bool open() override;
+        void close() override;
 
-        [[nodiscard]] bool open() override { return true; }
-        void close() override { }
+        void resizeRaw(u64 newSize) override;
+        void insertRaw(u64 offset, u64 size) override;
+        void removeRaw(u64 offset, u64 size) override;
+        void readRaw(u64 offset, void *buffer, size_t size) override;
+        void writeRaw(u64 offset, const void *buffer, size_t size) override;
 
-        void resize(size_t newSize) override {
-            this->m_size = newSize;
-        }
-        void insert(u64 offset, size_t size) override {
-            this->m_size += size;
-            this->m_provider->insert(offset + this->m_startAddress, size);
-        }
+        [[nodiscard]] u64 getActualSize() const override;
 
-        void remove(u64 offset, size_t size) override {
-            this->m_size -= size;
-            this->m_provider->remove(offset + this->m_startAddress, size);
-        }
+        [[nodiscard]] std::string getName() const override;
+        [[nodiscard]] std::vector<Description> getDataDescription() const override;
+        [[nodiscard]] UnlocalizedString getTypeName() const override;
 
-        void readRaw(u64 offset, void *buffer, size_t size) override { this->m_provider->read(offset + this->m_startAddress, buffer, size); }
-        void writeRaw(u64 offset, const void *buffer, size_t size) override { this->m_provider->write(offset + this->m_startAddress, buffer, size); }
-        [[nodiscard]] size_t getActualSize() const override { return this->m_size; }
+        void loadSettings(const nlohmann::json &settings) override;
+        [[nodiscard]] nlohmann::json storeSettings(nlohmann::json settings) const override;
 
-        [[nodiscard]] std::string getName() const override { return hex::format("{} View", this->m_provider->getName()); }
-        [[nodiscard]] std::vector<std::pair<std::string, std::string>> getDataInformation() const override { return this->m_provider->getDataInformation(); }
 
-        void loadSettings(const nlohmann::json &settings) override { hex::unused(settings); }
-        [[nodiscard]] nlohmann::json storeSettings(nlohmann::json settings) const override { return settings; }
+        void setProvider(u64 startAddress, size_t size, hex::prv::Provider *provider);
+        void setName(const std::string &name);
 
-        [[nodiscard]] std::string getTypeName() const override {
-            return "hex.builtin.provider.view";
-        }
+        [[nodiscard]] std::pair<Region, bool> getRegionValidity(u64 address) const override;
 
-        void setProvider(u64 startAddress, size_t size, hex::prv::Provider *provider) {
-            this->m_startAddress = startAddress;
-            this->m_size = size;
-            this->m_provider = provider;
-        }
-
-        [[nodiscard]] std::pair<Region, bool> getRegionValidity(u64 address) const override {
-            address -= this->getBaseAddress();
-
-            if (address < this->getActualSize())
-                return { Region { this->getBaseAddress() + address, this->getActualSize() - address }, true };
-            else
-                return { Region::Invalid(), false };
-        }
+        std::vector<MenuEntry> getMenuEntries() override;
 
     private:
+        void renameFile();
+
+    private:
+        std::string m_name;
+
         u64 m_startAddress = 0x00;
         size_t m_size = 0x00;
         prv::Provider *m_provider = nullptr;

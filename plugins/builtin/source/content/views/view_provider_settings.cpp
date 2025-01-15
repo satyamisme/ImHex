@@ -1,70 +1,77 @@
 #include "content/views/view_provider_settings.hpp"
 
+#include <hex/api/content_registry.hpp>
+#include <hex/api/task_manager.hpp>
+
+#include <toasts/toast_notification.hpp>
+
 namespace hex::plugin::builtin {
 
-    ViewProviderSettings::ViewProviderSettings() : hex::View("hex.builtin.view.provider_settings.name") {
-        EventManager::subscribe<EventProviderCreated>(this, [](hex::prv::Provider *provider) {
-            if (provider->hasLoadInterface())
-                EventManager::post<RequestOpenPopup>(View::toWindowName("hex.builtin.view.provider_settings.load_popup"));
+    ViewProviderSettings::ViewProviderSettings() : View::Modal("hex.builtin.view.provider_settings.name") {
+        EventProviderCreated::subscribe(this, [this](const hex::prv::Provider *provider) {
+            if (provider->hasLoadInterface() && !provider->shouldSkipLoadInterface())
+                this->getWindowOpenState() = true;
         });
-    }
 
-    ViewProviderSettings::~ViewProviderSettings() {
-        EventManager::unsubscribe<EventProviderCreated>(this);
-    }
-
-    void ViewProviderSettings::drawContent() {
-        if (ImGui::Begin(this->getName().c_str(), &this->getWindowOpenState(), ImGuiWindowFlags_NoCollapse)) {
+        ContentRegistry::Interface::addSidebarItem(ICON_VS_SERVER_PROCESS, [] {
             auto provider = hex::ImHexApi::Provider::get();
 
             if (provider != nullptr)
                 provider->drawInterface();
-        }
-        ImGui::End();
+        },
+        [] {
+            auto provider = hex::ImHexApi::Provider::get();
+
+            return provider != nullptr && provider->hasInterface() && provider->isAvailable();
+        });
     }
 
-    void ViewProviderSettings::drawAlwaysVisible() {
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-        if (ImGui::BeginPopupModal(View::toWindowName("hex.builtin.view.provider_settings.load_popup").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ViewProviderSettings::~ViewProviderSettings() {
+        EventProviderCreated::unsubscribe(this);
+    }
 
-            auto provider = hex::ImHexApi::Provider::get();
-            if (provider != nullptr) {
-                provider->drawLoadInterface();
+    void ViewProviderSettings::drawContent() {
+        auto provider = hex::ImHexApi::Provider::get();
+        if (provider != nullptr) {
+            bool settingsValid = provider->drawLoadInterface();
 
-                ImGui::NewLine();
-                ImGui::Separator();
+            ImGui::NewLine();
+            ImGui::Separator();
 
-                if (ImGui::Button("hex.builtin.common.open"_lang)) {
-                    if (provider->open()) {
-                        EventManager::post<EventProviderOpened>(provider);
-                        ImGui::CloseCurrentPopup();
-                    }
-                    else {
-                        View::showErrorPopup("hex.builtin.view.provider_settings.load_error"_lang);
-                        ImHexApi::Provider::remove(provider);
-                    }
-                }
+            ImGui::BeginDisabled(!settingsValid);
+            if (ImGui::Button("hex.ui.common.open"_lang)) {
+                if (provider->open()) {
+                    EventProviderOpened::post(provider);
 
-                ImGui::SameLine();
-
-                if (ImGui::Button("hex.builtin.common.cancel"_lang)) {
-                    ImHexApi::Provider::remove(provider);
+                    this->getWindowOpenState() = false;
                     ImGui::CloseCurrentPopup();
                 }
+                else {
+                    this->getWindowOpenState() = false;
+                    ImGui::CloseCurrentPopup();
+                    auto errorMessage = provider->getErrorMessage();
+                    if (errorMessage.empty()) {
+                        ui::ToastError::open("hex.builtin.view.provider_settings.load_error"_lang);
+                    } else {
+                        ui::ToastError::open(hex::format("hex.builtin.view.provider_settings.load_error_details"_lang, errorMessage));
+                    }
+                    TaskManager::doLater([=] { ImHexApi::Provider::remove(provider); });
+                }
             }
+            ImGui::EndDisabled();
 
-            ImGui::EndPopup();
+            ImGui::SameLine();
+
+            if (ImGui::Button("hex.ui.common.cancel"_lang)) {
+                ImGui::CloseCurrentPopup();
+                this->getWindowOpenState() = false;
+                TaskManager::doLater([=] { ImHexApi::Provider::remove(provider); });
+            }
         }
     }
 
     bool ViewProviderSettings::hasViewMenuItemEntry() const {
-        return this->isAvailable();
-    }
-
-    bool ViewProviderSettings::isAvailable() const {
-        auto provider = hex::ImHexApi::Provider::get();
-
-        return provider != nullptr && provider->hasInterface();
+        return false;
     }
 
 }

@@ -1,10 +1,14 @@
 #include "content/providers/motorola_srec_provider.hpp"
 
 
-#include <hex/api/localization.hpp>
+#include <hex/api/localization_manager.hpp>
 #include <hex/helpers/utils.hpp>
-#include <hex/helpers/file.hpp>
 #include <hex/helpers/fmt.hpp>
+
+#include <wolv/io/file.hpp>
+#include <wolv/io/fs.hpp>
+#include <wolv/utils/expected.hpp>
+#include <wolv/utils/string.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -21,7 +25,7 @@ namespace hex::plugin::builtin {
                 throw std::runtime_error("Failed to parse hex digit");
         }
 
-        std::map<u64, std::vector<u8>> parseMotorolaSREC(const std::string &string) {
+        wolv::util::Expected<std::map<u64, std::vector<u8>>, std::string> parseMotorolaSREC(const std::string &string) {
             std::map<u64, std::vector<u8>> result;
 
             u64 offset = 0x00;
@@ -30,8 +34,8 @@ namespace hex::plugin::builtin {
             u32 address = 0x0000'0000;
             std::vector<u8> data;
 
-            auto c = [&]() {
-                while (std::isspace(string[offset]) && offset < string.length())
+            auto c = [&] {
+                while (offset < string.length() && std::isspace(string[offset]))
                     offset++;
 
                 if (offset >= string.length())
@@ -40,9 +44,9 @@ namespace hex::plugin::builtin {
                 return string[offset++];
             };
 
-            auto parseValue = [&](u8 byteCount) {
+            auto parseValue = [&](u8 count) {
                 u64 value = 0x00;
-                for (u8 i = 0; i < byteCount; i++) {
+                for (u8 i = 0; i < count; i++) {
                     u8 byte = (parseHexDigit(c()) << 4) | parseHexDigit(c());
                     value <<= 8;
                     value |= byte;
@@ -115,7 +119,7 @@ namespace hex::plugin::builtin {
 
                     byteCount -= 1;
 
-                    auto readData = [&byteCount, &parseValue]() {
+                    auto readData = [&byteCount, &parseValue] {
                         std::vector<u8> bytes;
                         bytes.resize(byteCount);
                         for (u8 i = 0; i < byteCount; i++) {
@@ -154,9 +158,12 @@ namespace hex::plugin::builtin {
                             endOfFile = true;
                             break;
                     }
+
+                    while (std::isspace(string[offset]) && offset < string.length())
+                        offset++;
                 }
             } catch (const std::runtime_error &e) {
-                return { };
+                return wolv::util::Unexpected<std::string>(e.what());
             }
 
             return result;
@@ -165,26 +172,29 @@ namespace hex::plugin::builtin {
     }
 
     bool MotorolaSRECProvider::open() {
-        auto file = fs::File(this->m_sourceFilePath, fs::File::Mode::Read);
-        if (!file.isValid())
+        auto file = wolv::io::File(m_sourceFilePath, wolv::io::File::Mode::Read);
+        if (!file.isValid()) {
+            this->setErrorMessage(hex::format("hex.builtin.provider.file.error.open"_lang, m_sourceFilePath.string(), std::system_category().message(errno)));
             return false;
+        }
 
         auto data = motorola_srec::parseMotorolaSREC(file.readString());
-        if (data.empty())
+        if (!data.has_value()) {
+            this->setErrorMessage(data.error());
             return false;
+        }
 
         u64 maxAddress = 0x00;
-        decltype(this->m_data)::interval_vector intervals;
-        for (auto &[address, bytes] : data) {
+        for (auto &[address, bytes] : data.value()) {
             auto endAddress = (address + bytes.size()) - 1;
-            intervals.emplace_back(address, endAddress, std::move(bytes));
+            m_data.emplace({ address, endAddress }, std::move(bytes));
 
             if (endAddress > maxAddress)
                 maxAddress = endAddress;
         }
-        this->m_data = std::move(intervals);
-        this->m_dataSize = maxAddress + 1;
-        this->m_dataValid = true;
+
+        m_dataSize = maxAddress + 1;
+        m_dataValid = true;
 
         return true;
     }
@@ -194,16 +204,42 @@ namespace hex::plugin::builtin {
     }
 
     [[nodiscard]] std::string MotorolaSRECProvider::getName() const {
-        return hex::format("hex.builtin.provider.motorola_srec.name"_lang, hex::toUTF8String(this->m_sourceFilePath.filename()));
+        return hex::format("hex.builtin.provider.motorola_srec.name"_lang, wolv::util::toUTF8String(m_sourceFilePath.filename()));
+    }
+
+
+    [[nodiscard]] std::vector<MotorolaSRECProvider::Description> MotorolaSRECProvider::getDataDescription() const {
+        std::vector<Description> result;
+
+        result.emplace_back("hex.builtin.provider.file.path"_lang, wolv::util::toUTF8String(m_sourceFilePath));
+        result.emplace_back("hex.builtin.provider.file.size"_lang, hex::toByteString(this->getActualSize()));
+
+        return result;
     }
 
     bool MotorolaSRECProvider::handleFilePicker() {
-        auto picked = fs::openFileBrowser(fs::DialogMode::Open, { { "Motorola SREC File", "*" } }, [this](const std::fs::path &path) {
-            this->m_sourceFilePath = path;
-        });
+        auto picked = fs::openFileBrowser(fs::DialogMode::Open, {
+                { "Motorola SREC File", "s19" },
+                { "Motorola SREC File", "s28" },
+                { "Motorola SREC File", "s37" },
+                { "Motorola SREC File", "s" },
+                { "Motorola SREC File", "s1" },
+                { "Motorola SREC File", "s2" },
+                { "Motorola SREC File", "s3" },
+                { "Motorola SREC File", "sx" },
+                { "Motorola SREC File", "srec" },
+                { "Motorola SREC File", "exo" },
+                { "Motorola SREC File", "mot" },
+                { "Motorola SREC File", "mxt" }
+            },
+            [this](const std::fs::path &path) {
+                m_sourceFilePath = path;
+            }
+        );
+
         if (!picked)
             return false;
-        if (!fs::isRegularFile(this->m_sourceFilePath))
+        if (!wolv::io::fs::isRegularFile(m_sourceFilePath))
             return false;
 
         return true;

@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <hex/helpers/crypto.hpp>
 
 #include <hex/providers/provider.hpp>
-#include <hex/helpers/utils.hpp>
-#include <hex/helpers/concepts.hpp>
+
+#include <wolv/utils/guards.hpp>
+#include <wolv/utils/expected.hpp>
 
 #include <mbedtls/version.h>
 #include <mbedtls/base64.h>
@@ -11,13 +13,10 @@
 #include <mbedtls/sha1.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/sha512.h>
-#include <mbedtls/aes.h>
 #include <mbedtls/cipher.h>
 
 #include <array>
-#include <span>
 #include <functional>
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <bit>
@@ -85,14 +84,14 @@ namespace hex::crypt {
 
     template<size_t NumBits> requires (std::has_single_bit(NumBits))
     class Crc {
-        // use reflected algorithm, so we reflect only if refin / refout is FALSE
+        // Use reflected algorithm, so we reflect only if refin / refout is FALSE
         // mask values, 0b1 << 64 is UB, so use 0b10 << 63
 
     public:
         constexpr Crc(u64 polynomial, u64 init, u64 xorOut, bool reflectInput, bool reflectOutput)
             : m_value(0x00), m_init(init & ((0b10ull << (NumBits - 1)) - 1)), m_xorOut(xorOut & ((0b10ull << (NumBits - 1)) - 1)),
               m_reflectInput(reflectInput), m_reflectOutput(reflectOutput),
-              m_table([polynomial]() {
+              m_table([polynomial] {
                 auto reflectedPoly = reflect(polynomial & ((0b10ull << (NumBits - 1)) - 1), NumBits);
                 std::array<uint64_t, 256> table = { 0 };
 
@@ -110,30 +109,30 @@ namespace hex::crypt {
                 return table;
          }()) {
             reset();
-        };
+        }
 
         constexpr void reset() {
-            this->m_value = reflect(m_init, NumBits);
+            m_value = reflect(m_init, NumBits);
         }
 
         constexpr void processBytes(const unsigned char *data, std::size_t size) {
             for (std::size_t i = 0; i < size; i++) {
                 u8 byte;
-                if (this->m_reflectInput)
+                if (m_reflectInput)
                     byte = data[i];
                 else
                     byte = reflect(data[i]);
 
-                this->m_value = this->m_table[(this->m_value ^ byte) & 0xFFL] ^ (this->m_value >> 8);
+                m_value = m_table[(m_value ^ byte) & 0xFFL] ^ (m_value >> 8);
             }
         }
 
         [[nodiscard]]
         constexpr u64 checksum() const {
-            if (this->m_reflectOutput)
-                return this->m_value ^ m_xorOut;
+            if (m_reflectOutput)
+                return m_value ^ m_xorOut;
             else
-                return reflect(this->m_value, NumBits) ^ m_xorOut;
+                return reflect(m_value, NumBits) ^ m_xorOut;
         }
 
     private:
@@ -157,7 +156,7 @@ namespace hex::crypt {
         return crc.checksum();
     }
 
-    u16 crc8(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorOut, bool reflectIn, bool reflectOut) {
+    u8 crc8(prv::Provider *&data, u64 offset, size_t size, u32 polynomial, u32 init, u32 xorOut, bool reflectIn, bool reflectOut) {
         return calcCrc<8>(data, offset, size, polynomial, init, xorOut, reflectIn, reflectOut);
     }
 
@@ -366,9 +365,9 @@ namespace hex::crypt {
     std::vector<u8> decode64(const std::vector<u8> &input) {
 
         size_t written = 0;
-        mbedtls_base64_decode(nullptr, 0, &written, reinterpret_cast<const unsigned char *>(input.data()), input.size());
+        mbedtls_base64_decode(nullptr, 0, &written, input.data(), input.size());
         std::vector<u8> output(written, 0x00);
-        if (mbedtls_base64_decode(output.data(), output.size(), &written, reinterpret_cast<const unsigned char *>(input.data()), input.size()))
+        if (mbedtls_base64_decode(output.data(), output.size(), &written, input.data(), input.size()))
             return {};
 
         output.resize(written);
@@ -379,10 +378,10 @@ namespace hex::crypt {
     std::vector<u8> encode64(const std::vector<u8> &input) {
 
         size_t written = 0;
-        mbedtls_base64_encode(nullptr, 0, &written, reinterpret_cast<const unsigned char *>(input.data()), input.size());
+        mbedtls_base64_encode(nullptr, 0, &written, input.data(), input.size());
 
         std::vector<u8> output(written, 0x00);
-        if (mbedtls_base64_encode(output.data(), output.size(), &written, reinterpret_cast<const unsigned char *>(input.data()), input.size()))
+        if (mbedtls_base64_encode(output.data(), output.size(), &written, input.data(), input.size()))
             return {};
 
         output.resize(written);
@@ -393,16 +392,22 @@ namespace hex::crypt {
     std::vector<u8> decode16(const std::string &input) {
         std::vector<u8> output(input.length() / 2, 0x00);
 
+
         mbedtls_mpi ctx;
         mbedtls_mpi_init(&ctx);
 
         ON_SCOPE_EXIT { mbedtls_mpi_free(&ctx); };
 
-        if (mbedtls_mpi_read_string(&ctx, 16, input.c_str()))
-            return {};
+        // Read buffered
+        constexpr static auto BufferSize = 0x100;
+        for (size_t offset = 0; offset < input.size(); offset += BufferSize) {
+            std::string inputPart = input.substr(offset, std::min<size_t>(BufferSize, input.size() - offset));
+            if (mbedtls_mpi_read_string(&ctx, 16, inputPart.c_str()))
+                return {};
 
-        if (mbedtls_mpi_write_binary(&ctx, output.data(), output.size()))
-            return {};
+            if (mbedtls_mpi_write_binary(&ctx, output.data() + offset / 2, inputPart.size() / 2))
+                return {};
+        }
 
         return output;
     }
@@ -444,7 +449,7 @@ namespace hex::crypt {
                 break;
             }
         }
-        if constexpr(std::is_signed<T>::value) {
+        if constexpr(std::signed_integral<T>) {
             if ((b & 0x40) != 0) {
                 value |= safeLeftShift(~static_cast<T>(0), shift);
             }
@@ -467,7 +472,7 @@ namespace hex::crypt {
         while (true) {
             byte = value & 0x7F;
             value >>= 7;
-            if constexpr(std::is_signed<T>::value) {
+            if constexpr(std::signed_integral<T>) {
                 if (value == 0 && (byte & 0x40) == 0) {
                     break;
                 }
@@ -493,8 +498,8 @@ namespace hex::crypt {
         return encodeLeb128<i128>(value);
     }
 
-    static std::vector<u8> aes(mbedtls_cipher_type_t type, mbedtls_operation_t operation, const std::vector<u8> &key, std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::vector<u8> &input) {
-        std::vector<u8> output;
+    static wolv::util::Expected<std::vector<u8>, int> aes(mbedtls_cipher_type_t type, mbedtls_operation_t operation, const std::vector<u8> &key,
+                   std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::span<const u8> &input) {
 
         if (input.empty())
             return {};
@@ -504,38 +509,65 @@ namespace hex::crypt {
         mbedtls_cipher_context_t ctx;
         auto cipherInfo = mbedtls_cipher_info_from_type(type);
 
+        if (cipherInfo == nullptr)
+            return {};
 
-        mbedtls_cipher_setup(&ctx, cipherInfo);
-        mbedtls_cipher_setkey(&ctx, key.data(), static_cast<int>(key.size() * 8), operation);
+        int setupResult = mbedtls_cipher_setup(&ctx, cipherInfo);
+        if (setupResult != 0)
+            return wolv::util::Unexpected(setupResult);
+
+        int setKeyResult = mbedtls_cipher_setkey(&ctx, key.data(), key.size() * 8, operation);
+        if (setKeyResult != 0)
+            return wolv::util::Unexpected(setKeyResult);
 
         std::array<u8, 16> nonceCounter = { 0 };
-        std::copy(nonce.begin(), nonce.end(), nonceCounter.begin());
-        std::copy(iv.begin(), iv.end(), nonceCounter.begin() + 8);
+
+        auto mode = mbedtls_cipher_get_cipher_mode(&ctx);
+
+        // if we are in ECB mode, we don't need to set the nonce
+        if (mode != MBEDTLS_MODE_ECB) {
+            std::ranges::copy(nonce, nonceCounter.begin());
+            std::ranges::copy(iv, nonceCounter.begin() + 8);
+        }
 
         size_t outputSize = input.size() + mbedtls_cipher_get_block_size(&ctx);
-        output.resize(outputSize, 0x00);
-        mbedtls_cipher_crypt(&ctx, nonceCounter.data(), nonceCounter.size(), input.data(), input.size(), output.data(), &outputSize);
+        std::vector<u8> output(outputSize, 0x00);
 
+        int cryptResult = 0;
+        if (mode == MBEDTLS_MODE_ECB) {
+            cryptResult = mbedtls_cipher_crypt(&ctx, nullptr, 0, input.data(), input.size(), output.data(), &outputSize);
+        } else {
+            cryptResult = mbedtls_cipher_crypt(&ctx, nonceCounter.data(), nonceCounter.size(), input.data(), input.size(), output.data(), &outputSize);
+        }
+
+        // free regardless of the result
         mbedtls_cipher_free(&ctx);
+
+        if (cryptResult != 0) {
+            return wolv::util::Unexpected(cryptResult);
+        }
 
         output.resize(input.size());
 
         return output;
     }
 
-    std::vector<u8> aesDecrypt(AESMode mode, KeyLength keyLength, const std::vector<u8> &key, std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::vector<u8> &input) {
+    wolv::util::Expected<std::vector<u8>, int> aesDecrypt(AESMode mode, KeyLength keyLength, const std::vector<u8> &key, std::array<u8, 8> nonce, std::array<u8, 8> iv, const std::vector<u8> &input) {
         switch (keyLength) {
             case KeyLength::Key128Bits:
-                if (key.size() != 128 / 8) return {};
+                if (key.size() != 128 / 8)
+                    return wolv::util::Unexpected(CRYPTO_ERROR_INVALID_KEY_LENGTH);
                 break;
             case KeyLength::Key192Bits:
-                if (key.size() != 192 / 8) return {};
+                if (key.size() != 192 / 8)
+                    return wolv::util::Unexpected(CRYPTO_ERROR_INVALID_KEY_LENGTH);
                 break;
             case KeyLength::Key256Bits:
-                if (key.size() != 256 / 8) return {};
+                if (key.size() != 256 / 8)
+                    return wolv::util::Unexpected(CRYPTO_ERROR_INVALID_KEY_LENGTH);
                 break;
             default:
-                return {};
+                return wolv::util::Unexpected(CRYPTO_ERROR_INVALID_KEY_LENGTH);
         }
 
         mbedtls_cipher_type_t type;
@@ -565,7 +597,7 @@ namespace hex::crypt {
                 type = MBEDTLS_CIPHER_AES_128_XTS;
                 break;
             default:
-                return {};
+                return wolv::util::Unexpected(CRYPTO_ERROR_INVALID_MODE);
         }
 
         type = mbedtls_cipher_type_t(type + u8(keyLength));

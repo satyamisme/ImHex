@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <concepts>
+#include <type_traits>
+
 using u8   = std::uint8_t;
 using u16  = std::uint16_t;
 using u32  = std::uint32_t;
@@ -21,20 +24,67 @@ namespace hex {
 
     struct Region {
         u64 address;
-        size_t size;
+        u64 size;
 
-        [[nodiscard]] bool isWithin(const Region &other) const;
-        [[nodiscard]] bool overlaps(const Region &other) const;
+        [[nodiscard]] constexpr bool isWithin(const Region &other) const {
+            if (*this == Invalid() || other == Invalid())
+                return false;
 
-        [[nodiscard]] u64 getStartAddress() const;
-        [[nodiscard]] u64 getEndAddress() const;
-        [[nodiscard]] size_t getSize() const;
+            if (this->getStartAddress() >= other.getStartAddress() && this->getEndAddress() <= other.getEndAddress())
+                return true;
 
-        bool operator==(const Region &other) const;
+            return false;
+        }
+
+        [[nodiscard]] constexpr bool overlaps(const Region &other) const {
+            if (*this == Invalid() || other == Invalid())
+                return false;
+
+            if (this->getEndAddress() >= other.getStartAddress() && this->getStartAddress() <= other.getEndAddress())
+                return true;
+
+            return false;
+        }
+
+        [[nodiscard]] constexpr u64 getStartAddress() const { return this->address; }
+        [[nodiscard]] constexpr u64 getEndAddress() const {
+            if (this->size == 0)
+                return this->address;
+            else
+                return this->address + this->size - 1;
+        }
+        [[nodiscard]] constexpr size_t getSize() const { return this->size; }
+
+        [[nodiscard]] constexpr bool operator==(const Region &other) const {
+            return this->address == other.address && this->size == other.size;
+        }
 
         constexpr static Region Invalid() {
             return { 0, 0 };
         }
+
+        constexpr bool operator<(const Region &other) const {
+            return this->address < other.address;
+        }
+    };
+
+
+    template<typename T>
+    concept Pointer = std::is_pointer_v<T>;
+
+    template<Pointer T>
+    struct NonNull {
+        NonNull(T ptr) : pointer(ptr) { }
+        NonNull(std::nullptr_t) = delete;
+        NonNull(std::integral auto) = delete;
+        NonNull(bool) = delete;
+
+        [[nodiscard]] T get()        const { return pointer; }
+        [[nodiscard]] T operator->() const { return pointer; }
+        [[nodiscard]] T operator*()  const { return *pointer; }
+        [[nodiscard]] operator T()   const { return pointer; }
+
+        T pointer;
     };
 
 }

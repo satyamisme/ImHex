@@ -1,28 +1,68 @@
 #pragma once
 
-#include <hex.hpp>
-
-#include <hex/helpers/fmt.hpp>
-#include <hex/helpers/fs.hpp>
-
+#include <functional>
+#include <list>
+#include <span>
 #include <string>
 
-#if defined(OS_WINDOWS)
-    #include <windows.h>
-#else
-    #include <dlfcn.h>
-#endif
+#include <wolv/io/fs.hpp>
+
+#include <hex/helpers/logger.hpp>
+#include <hex/helpers/auto_reset.hpp>
 
 struct ImGuiContext;
 
 namespace hex {
 
+    struct SubCommand {
+        std::string commandLong;
+        std::string commandShort;
+
+        std::string commandDescription;
+        std::function<void(const std::vector<std::string>&)> callback;
+    };
+
+    struct Feature {
+        std::string name;
+        bool enabled;
+    };
+
+    struct PluginFunctions {
+        using InitializePluginFunc     = void (*)();
+        using InitializeLibraryFunc    = void (*)();
+        using GetPluginNameFunc        = const char *(*)();
+        using GetLibraryNameFunc       = const char *(*)();
+        using GetPluginAuthorFunc      = const char *(*)();
+        using GetPluginDescriptionFunc = const char *(*)();
+        using GetCompatibleVersionFunc = const char *(*)();
+        using SetImGuiContextFunc      = void (*)(ImGuiContext *);
+        using GetSubCommandsFunc       = void* (*)();
+        using GetFeaturesFunc          = void* (*)();
+
+        InitializePluginFunc        initializePluginFunction        = nullptr;
+        InitializeLibraryFunc       initializeLibraryFunction       = nullptr;
+        GetPluginNameFunc           getPluginNameFunction           = nullptr;
+        GetLibraryNameFunc          getLibraryNameFunction          = nullptr;
+        GetPluginAuthorFunc         getPluginAuthorFunction         = nullptr;
+        GetPluginDescriptionFunc    getPluginDescriptionFunction    = nullptr;
+        GetCompatibleVersionFunc    getCompatibleVersionFunction    = nullptr;
+        SetImGuiContextFunc         setImGuiContextFunction         = nullptr;
+        SetImGuiContextFunc         setImGuiContextLibraryFunction  = nullptr;
+        GetSubCommandsFunc          getSubCommandsFunction          = nullptr;
+        GetFeaturesFunc             getFeaturesFunction             = nullptr;
+    };
+
     class Plugin {
     public:
         explicit Plugin(const std::fs::path &path);
+        explicit Plugin(const std::string &name, const PluginFunctions &functions);
+
         Plugin(const Plugin &) = delete;
         Plugin(Plugin &&other) noexcept;
         ~Plugin();
+
+        Plugin& operator=(const Plugin &) = delete;
+        Plugin& operator=(Plugin &&other) noexcept;
 
         [[nodiscard]] bool initializePlugin() const;
         [[nodiscard]] std::string getPluginName() const;
@@ -30,62 +70,65 @@ namespace hex {
         [[nodiscard]] std::string getPluginDescription() const;
         [[nodiscard]] std::string getCompatibleVersion() const;
         void setImGuiContext(ImGuiContext *ctx) const;
-        [[nodiscard]] bool isBuiltinPlugin() const;
 
         [[nodiscard]] const std::fs::path &getPath() const;
 
+        [[nodiscard]] bool isValid() const;
         [[nodiscard]] bool isLoaded() const;
 
-    private:
-        using InitializePluginFunc     = void (*)();
-        using GetPluginNameFunc        = const char *(*)();
-        using GetPluginAuthorFunc      = const char *(*)();
-        using GetPluginDescriptionFunc = const char *(*)();
-        using GetCompatibleVersionFunc = const char *(*)();
-        using SetImGuiContextFunc      = void (*)(ImGuiContext *);
-        using IsBuiltinPluginFunc      = bool (*)();
+        [[nodiscard]] std::span<SubCommand> getSubCommands() const;
+        [[nodiscard]] std::span<Feature> getFeatures() const;
 
-        #if defined(OS_WINDOWS)
-            HMODULE m_handle = nullptr;
-        #else
-            void *m_handle = nullptr;
-        #endif
+        [[nodiscard]] bool isLibraryPlugin() const;
+
+        [[nodiscard]] bool wasAddedManually() const;
+
+    private:
+        uintptr_t m_handle = 0;
         std::fs::path m_path;
 
         mutable bool m_initialized = false;
+        bool m_addedManually = false;
 
-        InitializePluginFunc m_initializePluginFunction         = nullptr;
-        GetPluginNameFunc m_getPluginNameFunction               = nullptr;
-        GetPluginAuthorFunc m_getPluginAuthorFunction           = nullptr;
-        GetPluginDescriptionFunc m_getPluginDescriptionFunction = nullptr;
-        GetCompatibleVersionFunc m_getCompatibleVersionFunction = nullptr;
-        SetImGuiContextFunc m_setImGuiContextFunction           = nullptr;
-        IsBuiltinPluginFunc m_isBuiltinPluginFunction           = nullptr;
+        PluginFunctions m_functions = {};
 
         template<typename T>
         [[nodiscard]] auto getPluginFunction(const std::string &symbol) {
             return reinterpret_cast<T>(this->getPluginFunction(symbol));
         }
 
-    private:
-        [[nodiscard]] void *getPluginFunction(const std::string &symbol);
+        [[nodiscard]] void *getPluginFunction(const std::string &symbol) const;
     };
 
     class PluginManager {
     public:
         PluginManager() = delete;
 
+        static bool load();
         static bool load(const std::fs::path &pluginFolder);
+
+        static bool loadLibraries();
+        static bool loadLibraries(const std::fs::path &libraryFolder);
+
         static void unload();
         static void reload();
+        static void initializeNewPlugins();
+        static void addLoadPath(const std::fs::path &path);
 
-        static const auto &getPlugins() {
-            return PluginManager::s_plugins;
-        }
+        static void addPlugin(const std::string &name, PluginFunctions functions);
+
+        static Plugin* getPlugin(const std::string &name);
+        static const std::list<Plugin>& getPlugins();
+        static const std::vector<std::fs::path>& getPluginPaths();
+        static const std::vector<std::fs::path>& getPluginLoadPaths();
+
+        static bool isPluginLoaded(const std::fs::path &path);
 
     private:
-        static std::fs::path s_pluginFolder;
-        static std::vector<Plugin> s_plugins;
+        static std::list<Plugin>& getPluginsMutable();
+
+        static AutoReset<std::vector<std::fs::path>> s_pluginPaths, s_pluginLoadPaths;
+        static AutoReset<std::vector<uintptr_t>> s_loadedLibraries;
     };
 
 }

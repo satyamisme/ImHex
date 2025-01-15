@@ -1,7 +1,6 @@
 #include <hex/test/tests.hpp>
 
-#include <hex/helpers/file.hpp>
-#include <hex/helpers/fs.hpp>
+#include <wolv/io/file.hpp>
 
 using namespace std::literals::string_literals;
 
@@ -12,21 +11,21 @@ TEST_SEQUENCE("FileAccess") {
     std::fs::create_directories(FilePath.parent_path());
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Create);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Create);
         TEST_ASSERT(file.isValid());
 
-        file.write(FileContent);
+        file.writeString(FileContent);
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Read);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Read);
         TEST_ASSERT(file.isValid());
 
         TEST_ASSERT(file.readString() == FileContent);
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Write);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Write);
         TEST_ASSERT(file.isValid());
 
 
@@ -35,7 +34,7 @@ TEST_SEQUENCE("FileAccess") {
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Read);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Read);
         if (file.isValid())
             TEST_FAIL();
     }
@@ -50,21 +49,21 @@ TEST_SEQUENCE("UTF-8 Path") {
     std::fs::create_directories(FilePath.parent_path());
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Create);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Create);
         TEST_ASSERT(file.isValid());
 
-        file.write(FileContent);
+        file.writeU8String(FileContent);
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Read);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Read);
         TEST_ASSERT(file.isValid());
 
         TEST_ASSERT(file.readU8String() == FileContent);
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Write);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Write);
         TEST_ASSERT(file.isValid());
 
 
@@ -73,7 +72,7 @@ TEST_SEQUENCE("UTF-8 Path") {
     }
 
     {
-        hex::fs::File file(FilePath, hex::fs::File::Mode::Read);
+        wolv::io::File file(FilePath, wolv::io::File::Mode::Read);
         if (file.isValid())
             TEST_FAIL();
     }

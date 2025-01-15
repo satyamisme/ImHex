@@ -2,12 +2,13 @@
 
 #include <hex/ui/view.hpp>
 
-#include <vector>
+#include <TextEditor.h>
+
 #include <list>
 
 namespace hex::plugin::builtin {
 
-    class ViewBookmarks : public View {
+    class ViewBookmarks : public View::Window {
     public:
         ViewBookmarks();
         ~ViewBookmarks() override;
@@ -15,14 +16,25 @@ namespace hex::plugin::builtin {
         void drawContent() override;
 
     private:
-        static bool importBookmarks(hex::prv::Provider *provider, const nlohmann::json &json);
-        static bool exportBookmarks(hex::prv::Provider *provider, nlohmann::json &json);
+        struct Bookmark {
+            ImHexApi::Bookmarks::Entry entry;
+            TextEditor editor;
+            bool highlightVisible;
+        };
+
+    private:
+        void drawDropTarget(std::list<Bookmark>::iterator it, float height);
+
+        bool importBookmarks(hex::prv::Provider *provider, const nlohmann::json &json);
+        bool exportBookmarks(hex::prv::Provider *provider, nlohmann::json &json);
 
         void registerMenuItems();
+
     private:
         std::string m_currFilter;
 
-        std::list<ImHexApi::Bookmarks::Entry>::iterator m_dragStartIterator;
+        PerProvider<std::list<Bookmark>> m_bookmarks;
+        PerProvider<u64> m_currBookmarkId;
     };
 
 }

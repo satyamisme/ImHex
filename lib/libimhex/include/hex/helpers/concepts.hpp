@@ -1,7 +1,5 @@
 #pragma once
 
-#include <hex.hpp>
-
 #include <type_traits>
 #include <memory>
 
@@ -16,8 +14,9 @@ namespace hex {
     concept has_size = sizeof(T) == Size;
 
     template<typename T>
-    class Cloneable {
+    class ICloneable {
     public:
+        virtual ~ICloneable() = default;
         [[nodiscard]] virtual std::unique_ptr<T> clone() const = 0;
     };
 

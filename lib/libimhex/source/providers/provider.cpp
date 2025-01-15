@@ -1,86 +1,156 @@
 #include <hex/providers/provider.hpp>
 
 #include <hex.hpp>
-#include <hex/api/event.hpp>
+#include <hex/api/event_manager.hpp>
 
 #include <cmath>
 #include <cstring>
-#include <map>
 #include <optional>
+
+#include <hex/helpers/magic.hpp>
+#include <wolv/io/file.hpp>
+#include <wolv/literals.hpp>
+
+#include <nlohmann/json.hpp>
 
 namespace hex::prv {
 
-    u32 Provider::s_idCounter = 0;
+    using namespace wolv::literals;
 
-    Provider::Provider() : m_id(s_idCounter++) {
-        this->m_patches.emplace_back();
+    namespace {
+
+        u32 s_idCounter = 0;
+
+    }
+
+
+    Provider::Provider() : m_undoRedoStack(this), m_id(s_idCounter++) {
+
     }
 
     Provider::~Provider() {
-        for (auto &overlay : this->m_overlays)
-            this->deleteOverlay(overlay);
+        m_overlays.clear();
+
+        if (auto selection = ImHexApi::HexEditor::getSelection(); selection.has_value() && selection->provider == this)
+            EventRegionSelected::post(ImHexApi::HexEditor::ProviderRegion { { 0x00, 0x00 }, nullptr });
     }
 
     void Provider::read(u64 offset, void *buffer, size_t size, bool overlays) {
-        hex::unused(overlays);
-
         this->readRaw(offset - this->getBaseAddress(), buffer, size);
+
+        if (overlays)
+            this->applyOverlays(offset, buffer, size);
     }
 
     void Provider::write(u64 offset, const void *buffer, size_t size) {
-        this->writeRaw(offset - this->getBaseAddress(), buffer, size);
+        if (!this->isWritable())
+            return;
+
+        EventProviderDataModified::post(this, offset, size, static_cast<const u8*>(buffer));
         this->markDirty();
     }
 
-    void Provider::save() { }
+    void Provider::save() {
+        if (!this->isWritable())
+            return;
+        
+        EventProviderSaved::post(this);
+    }
     void Provider::saveAs(const std::fs::path &path) {
-        hex::unused(path);
+        wolv::io::File file(path, wolv::io::File::Mode::Create);
+
+        if (file.isValid()) {
+            std::vector<u8> buffer(std::min<size_t>(2_MiB, this->getActualSize()), 0x00);
+            size_t bufferSize = 0;
+
+            for (u64 offset = 0; offset < this->getActualSize(); offset += bufferSize) {
+                bufferSize = std::min<size_t>(buffer.size(), this->getActualSize() - offset);
+
+                this->read(this->getBaseAddress() + offset, buffer.data(), bufferSize, true);
+                file.writeBuffer(buffer.data(), bufferSize);
+            }
+
+            EventProviderSaved::post(this);
+        }
     }
 
-    void Provider::resize(size_t newSize) {
-        hex::unused(newSize);
+    bool Provider::resize(u64 newSize) {
+        if (newSize >> 63) {
+            log::error("new provider size is very large ({}). Is it a negative number ?", newSize);
+            return false;
+        }
+        i64 difference = newSize - this->getActualSize();
+
+        if (difference > 0)
+            EventProviderDataInserted::post(this, this->getActualSize(), difference);
+        else if (difference < 0)
+            EventProviderDataRemoved::post(this, this->getActualSize() + difference, -difference);
+
+        this->markDirty();
+        return true;
+    }
+
+    void Provider::insert(u64 offset, u64 size) {
+        EventProviderDataInserted::post(this, offset, size);
 
         this->markDirty();
     }
 
-    void Provider::insert(u64 offset, size_t size) {
-        auto &patches = getPatches();
+    void Provider::remove(u64 offset, u64 size) {
+        EventProviderDataRemoved::post(this, offset, size);
 
-        std::vector<std::pair<u64, u8>> patchesToMove;
+        this->markDirty();
+    }
 
-        for (auto &[address, value] : patches) {
-            if (address > offset)
-                patchesToMove.emplace_back(address, value);
+    void Provider::insertRaw(u64 offset, u64 size) {
+        auto oldSize = this->getActualSize();
+        auto newSize = oldSize + size;
+        this->resizeRaw(newSize);
+
+        std::vector<u8> buffer(0x1000);
+        const std::vector<u8> zeroBuffer(0x1000);
+
+        auto position = oldSize;
+        while (position > offset) {
+            const auto readSize = std::min<size_t>(position - offset, buffer.size());
+
+            position -= readSize;
+
+            this->readRaw(position, buffer.data(), readSize);
+            this->writeRaw(position, zeroBuffer.data(), newSize - oldSize);
+            this->writeRaw(position + size, buffer.data(), readSize);
+        }
+    }
+
+    void Provider::removeRaw(u64 offset, u64 size) {
+        if (offset > this->getActualSize() || size == 0)
+            return;
+
+        if ((offset + size) > this->getActualSize())
+            size = this->getActualSize() - offset;
+
+        auto oldSize = this->getActualSize();
+
+        std::vector<u8> buffer(0x1000);
+
+        const auto newSize = oldSize - size;
+        auto position = offset;
+        while (position < newSize) {
+            const auto readSize = std::min<size_t>(newSize - position, buffer.size());
+
+            this->readRaw(position + size, buffer.data(), readSize);
+            this->writeRaw(position, buffer.data(), readSize);
+
+            position += readSize;
         }
 
-        for (const auto &[address, value] : patchesToMove)
-            patches.erase(address);
-        for (const auto &[address, value] : patchesToMove)
-            patches.insert({ address + size, value });
-
-        this->markDirty();
+        this->resizeRaw(newSize);
     }
 
-    void Provider::remove(u64 offset, size_t size) {
-        auto &patches = getPatches();
 
-        std::vector<std::pair<u64, u8>> patchesToMove;
 
-        for (auto &[address, value] : patches) {
-            if (address > offset)
-                patchesToMove.emplace_back(address, value);
-        }
-
-        for (const auto &[address, value] : patchesToMove)
-            patches.erase(address);
-        for (const auto &[address, value] : patchesToMove)
-            patches.insert({ address - size, value });
-
-        this->markDirty();
-    }
-
-    void Provider::applyOverlays(u64 offset, void *buffer, size_t size) {
-        for (auto &overlay : this->m_overlays) {
+    void Provider::applyOverlays(u64 offset, void *buffer, size_t size) const {
+        for (auto &overlay : m_overlays) {
             auto overlayOffset = overlay->getAddress();
             auto overlaySize   = overlay->getSize();
 
@@ -91,80 +161,67 @@ namespace hex::prv {
         }
     }
 
-
-    std::map<u64, u8> &Provider::getPatches() {
-        auto iter = this->m_patches.end();
-        for (u32 i = 0; i < this->m_patchTreeOffset + 1; i++)
-            iter--;
-
-        return *(iter);
-    }
-
-    const std::map<u64, u8> &Provider::getPatches() const {
-        auto iter = this->m_patches.end();
-        for (u32 i = 0; i < this->m_patchTreeOffset + 1; i++)
-            iter--;
-
-        return *(iter);
-    }
-
-    void Provider::applyPatches() {
-        for (auto &[patchAddress, patch] : getPatches()) {
-            this->writeRaw(patchAddress - this->getBaseAddress(), &patch, 1);
-        }
-        this->markDirty();
-
-        this->m_patches.emplace_back();
-    }
-
-
     Overlay *Provider::newOverlay() {
-        return this->m_overlays.emplace_back(new Overlay());
+        return m_overlays.emplace_back(std::make_unique<Overlay>()).get();
     }
 
     void Provider::deleteOverlay(Overlay *overlay) {
-        this->m_overlays.erase(std::find(this->m_overlays.begin(), this->m_overlays.end(), overlay));
-        delete overlay;
+        m_overlays.remove_if([overlay](const auto &item) {
+            return item.get() == overlay;
+        });
     }
 
-    const std::list<Overlay *> &Provider::getOverlays() {
-        return this->m_overlays;
+    const std::list<std::unique_ptr<Overlay>> &Provider::getOverlays() const {
+        return m_overlays;
     }
 
+
+    u64 Provider::getPageSize() const {
+        return m_pageSize;
+    }
+
+    void Provider::setPageSize(u64 pageSize) {
+        if (pageSize > MaxPageSize)
+            pageSize = MaxPageSize;
+        if (pageSize == 0)
+            return;
+
+        m_pageSize = pageSize;
+    }
 
     u32 Provider::getPageCount() const {
-        return std::max(1.0, std::ceil(this->getActualSize() / double(PageSize)));
+        return (this->getActualSize() / this->getPageSize()) + (this->getActualSize() % this->getPageSize() != 0 ? 1 : 0);
     }
 
     u32 Provider::getCurrentPage() const {
-        return this->m_currPage;
+        return m_currPage;
     }
 
     void Provider::setCurrentPage(u32 page) {
         if (page < getPageCount())
-            this->m_currPage = page;
+            m_currPage = page;
     }
 
 
     void Provider::setBaseAddress(u64 address) {
-        this->m_baseAddress = address;
+        m_baseAddress = address;
         this->markDirty();
     }
 
     u64 Provider::getBaseAddress() const {
-        return this->m_baseAddress;
+        return m_baseAddress;
     }
 
     u64 Provider::getCurrentPageAddress() const {
-        return PageSize * this->getCurrentPage();
+        return this->getPageSize() * this->getCurrentPage();
     }
 
-    size_t Provider::getSize() const {
-        return std::min(this->getActualSize() - PageSize * this->m_currPage, PageSize);
+    u64 Provider::getSize() const {
+        return std::min<u64>(this->getActualSize() - this->getPageSize() * m_currPage, this->getPageSize());
     }
 
     std::optional<u32> Provider::getPageOfAddress(u64 address) const {
-        u32 page = std::floor((address - this->getBaseAddress()) / double(PageSize));
+        u32 page = std::floor((address - this->getBaseAddress()) / double(this->getPageSize()));
 
         if (page >= this->getPageCount())
             return std::nullopt;
@@ -172,53 +229,24 @@ namespace hex::prv {
         return page;
     }
 
-    void Provider::addPatch(u64 offset, const void *buffer, size_t size, bool createUndo) {
-        if (this->m_patchTreeOffset > 0) {
-            auto iter = this->m_patches.end();
-            for (u32 i = 0; i < this->m_patchTreeOffset; i++)
-                iter--;
-
-            this->m_patches.erase(iter, this->m_patches.end());
-            this->m_patchTreeOffset = 0;
-        }
-
-        if (createUndo)
-            createUndoPoint();
-
-        for (u64 i = 0; i < size; i++) {
-            u8 patch         = reinterpret_cast<const u8 *>(buffer)[i];
-            u8 originalValue = 0x00;
-            this->readRaw(offset + i, &originalValue, sizeof(u8));
-
-            if (patch == originalValue)
-                getPatches().erase(offset + i);
-            else
-                getPatches()[offset + i] = patch;
-        }
-
-        this->markDirty();
-    }
-
-    void Provider::createUndoPoint() {
-        this->m_patches.push_back(getPatches());
+    std::vector<Provider::Description> Provider::getDataDescription() const {
+        return { };
     }
 
     void Provider::undo() {
-        if (canUndo())
-            this->m_patchTreeOffset++;
+        m_undoRedoStack.undo();
     }
 
     void Provider::redo() {
-        if (canRedo())
-            this->m_patchTreeOffset--;
+        m_undoRedoStack.redo();
     }
 
     bool Provider::canUndo() const {
-        return this->m_patchTreeOffset < this->m_patches.size() - 1;
+        return m_undoRedoStack.canUndo();
     }
 
     bool Provider::canRedo() const {
-        return this->m_patchTreeOffset > 0;
+        return m_undoRedoStack.canRedo();
     }
 
     bool Provider::hasFilePicker() const {
@@ -237,7 +265,8 @@ namespace hex::prv {
         return false;
     }
 
-    void Provider::drawLoadInterface() {
+    bool Provider::drawLoadInterface() {
+        return true;
     }
 
     void Provider::drawInterface() {
@@ -247,25 +276,28 @@ namespace hex::prv {
         settings["displayName"] = this->getName();
         settings["type"]        = this->getTypeName();
 
-        settings["baseAddress"] = this->m_baseAddress;
-        settings["currPage"]    = this->m_currPage;
+        settings["baseAddress"] = m_baseAddress;
+        settings["currPage"]    = m_currPage;
 
         return settings;
     }
 
     void Provider::loadSettings(const nlohmann::json &settings) {
-        this->m_baseAddress = settings["baseAddress"];
-        this->m_currPage    = settings["currPage"];
+        m_baseAddress = settings["baseAddress"];
+        m_currPage    = settings["currPage"];
     }
 
     std::pair<Region, bool> Provider::getRegionValidity(u64 address) const {
-        if ((address - this->getBaseAddress()) > this->getActualSize())
-            return { Region::Invalid(), false };
+        u64 absoluteAddress = address - this->getBaseAddress();
+
+        if (absoluteAddress < this->getActualSize())
+            return { Region { this->getBaseAddress() + absoluteAddress, this->getActualSize() - absoluteAddress }, true };
+
 
         bool insideValidRegion = false;
 
         std::optional<u64> nextRegionAddress;
-        for (const auto &overlay : this->m_overlays) {
+        for (const auto &overlay : m_overlays) {
             Region overlayRegion = { overlay->getAddress(), overlay->getSize() };
             if (!nextRegionAddress.has_value() || overlay->getAddress() < nextRegionAddress) {
                 nextRegionAddress = overlayRegion.getStartAddress();
@@ -276,14 +308,6 @@ namespace hex::prv {
             }
         }
 
-        for (const auto &[patchAddress, value] : this->m_patches.back()) {
-            if (!nextRegionAddress.has_value() || patchAddress < nextRegionAddress)
-                nextRegionAddress = patchAddress;
-
-            if (address == patchAddress)
-                insideValidRegion = true;
-        }
-
         if (!nextRegionAddress.has_value())
             return { Region::Invalid(), false };
         else
@@ -292,13 +316,29 @@ namespace hex::prv {
 
 
     u32 Provider::getID() const {
-        return this->m_id;
+        return m_id;
     }
 
     void Provider::setID(u32 id) {
-        this->m_id = id;
+        m_id = id;
         if (id > s_idCounter)
             s_idCounter = id + 1;
+    }
+
+
+    [[nodiscard]] std::variant<std::string, i128> Provider::queryInformation(const std::string &category, const std::string &) {
+        if (category == "mime")
+            return magic::getMIMEType(this);
+        else if (category == "description")
+            return magic::getDescription(this);
+        else if (category == "provider_type")
+            return this->getTypeName();
+        else
+            return 0;
+    }
+
+    [[nodiscard]] bool Provider::isDumpable() const {
+        return true;
     }
 
 }

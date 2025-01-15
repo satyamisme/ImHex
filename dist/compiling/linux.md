@@ -9,17 +9,12 @@ On Linux, ImHex is built through regular GCC (or optionally Clang).
 cd ImHex
 mkdir -p build
 cd build
-CC=gcc-12 CXX=g++-12 cmake                    \
+CC=gcc-12 CXX=g++-12                          \
+cmake -G "Ninja"                              \
     -DCMAKE_BUILD_TYPE=Release                \
-    -DCMAKE_INSTALL_PREFIX="/usr" 	          \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache        \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache      \
-    -DCMAKE_C_FLAGS="-fuse-ld=lld"            \
-    -DCMAKE_CXX_FLAGS="-fuse-ld=lld"          \
-    -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache     \
-    -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache   \
+    -DCMAKE_INSTALL_PREFIX="/usr"             \
     ..
-make -j 4 install
+ninja install
 ```
 
 All paths follow the XDG Base Directories standard, and can thus be modified

@@ -1,7 +1,12 @@
 #include <hex.hpp>
+
+#include <hex/api/event_manager.hpp>
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/logger.hpp>
 #include <hex/test/tests.hpp>
+#include <hex/api/plugin_manager.hpp>
+#include <hex/api/task_manager.hpp>
+#include <hex/api/event_manager.hpp>
 
 #include <cstdlib>
 
@@ -44,6 +49,11 @@ int main(int argc, char **argv) {
         hex::log::info("Success!");
     else
         hex::log::info("Failed!");
+
+    hex::TaskManager::exit();
+    hex::EventImHexClosing::post();
+    hex::EventManager::clear();
+    hex::PluginManager::unload();
 
     return result;
 }

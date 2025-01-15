@@ -2,15 +2,14 @@
 
 #include <hex/ui/view.hpp>
 
-#include <windows.h>
-
 #include <mutex>
 #include <thread>
+#include <jthread.hpp>
 #include <vector>
 
 namespace hex::plugin::windows {
 
-    class ViewTTYConsole : public View {
+    class ViewTTYConsole : public View::Window {
     public:
         ViewTTYConsole();
         ~ViewTTYConsole() override = default;
@@ -18,15 +17,15 @@ namespace hex::plugin::windows {
         void drawContent() override;
 
     private:
-        std::vector<std::pair<std::string, std::string>> m_comPorts;
+        std::vector<std::pair<std::wstring, std::wstring>> m_comPorts;
 
-        std::vector<std::pair<std::string, std::string>> getAvailablePorts();
+        std::vector<std::pair<std::wstring, std::wstring>> getAvailablePorts() const;
         bool connect();
         bool disconnect();
 
         void transmitData(std::vector<char> &data);
 
-        HANDLE m_portHandle = INVALID_HANDLE_VALUE;
+        void* m_portHandle = reinterpret_cast<void*>(-1);
         std::jthread m_receiveThread;
 
         int m_selectedPort       = 0;

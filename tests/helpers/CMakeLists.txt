@@ -11,11 +11,6 @@ set(AVAILABLE_TESTS
         TestProvider_read
         TestProvider_write
 
-    # Net
-        StoreAPI
-        TipsAPI
-        ContentAPI
-
     # File
         FileAccess
 
@@ -24,6 +19,15 @@ set(AVAILABLE_TESTS
         SplitStringAtString
         ExtractBits
 )
+
+if (NOT IMHEX_OFFLINE_BUILD)
+    set(AVAILABLE_TESTS ${AVAILABLE_TESTS}
+        # Net
+        StoreAPI
+        TipsAPI
+        ContentAPI
+    )
+endif ()
 
 
 add_executable(${PROJECT_NAME}
@@ -37,7 +41,7 @@ add_executable(${PROJECT_NAME}
 # ---- No need to change anything from here downwards unless you know what you're doing ---- #
 
 target_include_directories(${PROJECT_NAME} PRIVATE include)
-target_link_libraries(${PROJECT_NAME} libimhex tests_common)
+target_link_libraries(${PROJECT_NAME} PRIVATE libimhex tests_common ${FMT_LIBRARIES})
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 

@@ -1,7 +1,8 @@
 #pragma once
-#include <hex.hpp>
 
-#include <optional>
+#include <hex.hpp>
+#include <hex/api/localization_manager.hpp>
+
 #include <string>
 #include <string_view>
 #include <map>
@@ -24,41 +25,48 @@ namespace hex::dp {
             Out
         };
 
-        Attribute(IOType ioType, Type type, std::string unlocalizedName);
+        Attribute(IOType ioType, Type type, UnlocalizedString unlocalizedName);
         ~Attribute();
 
-        [[nodiscard]] int getId() const { return this->m_id; }
-        void setId(int id) { this->m_id = id; }
+        [[nodiscard]] int getId() const { return m_id; }
+        void setId(int id) { m_id = id; }
 
-        [[nodiscard]] IOType getIOType() const { return this->m_ioType; }
-        [[nodiscard]] Type getType() const { return this->m_type; }
-        [[nodiscard]] const std::string &getUnlocalizedName() const { return this->m_unlocalizedName; }
+        [[nodiscard]] IOType getIOType() const { return m_ioType; }
+        [[nodiscard]] Type getType() const { return m_type; }
+        [[nodiscard]] const UnlocalizedString &getUnlocalizedName() const { return m_unlocalizedName; }
 
-        void addConnectedAttribute(int linkId, Attribute *to) { this->m_connectedAttributes.insert({ linkId, to }); }
-        void removeConnectedAttribute(int linkId) { this->m_connectedAttributes.erase(linkId); }
-        [[nodiscard]] std::map<int, Attribute *> &getConnectedAttributes() { return this->m_connectedAttributes; }
+        void addConnectedAttribute(int linkId, Attribute *to) { m_connectedAttributes.insert({ linkId, to }); }
+        void removeConnectedAttribute(int linkId) { m_connectedAttributes.erase(linkId); }
+        [[nodiscard]] std::map<int, Attribute *> &getConnectedAttributes() { return m_connectedAttributes; }
 
-        [[nodiscard]] Node *getParentNode() { return this->m_parentNode; }
+        [[nodiscard]] Node *getParentNode() const { return m_parentNode; }
 
-        [[nodiscard]] std::optional<std::vector<u8>> &getOutputData() { return this->m_outputData; }
-
-        static void setIdCounter(int id) {
-            if (id > Attribute::s_idCounter)
-                Attribute::s_idCounter = id;
+        [[nodiscard]] std::vector<u8>& getOutputData() {
+            if (!m_outputData.empty())
+                return m_outputData;
+            else
+                return m_defaultData;
         }
+
+        void clearOutputData() { m_outputData.clear(); }
+
+        [[nodiscard]] std::vector<u8>& getDefaultData() { return m_defaultData; }
+
+        static void setIdCounter(int id);
 
     private:
         int m_id;
         IOType m_ioType;
         Type m_type;
-        std::string m_unlocalizedName;
+        UnlocalizedString m_unlocalizedName;
         std::map<int, Attribute *> m_connectedAttributes;
         Node *m_parentNode = nullptr;
 
-        std::optional<std::vector<u8>> m_outputData;
+        std::vector<u8> m_outputData;
+        std::vector<u8> m_defaultData;
 
         friend class Node;
-        void setParentNode(Node *node) { this->m_parentNode = node; }
+        void setParentNode(Node *node) { m_parentNode = node; }
 
         static int s_idCounter;
     };

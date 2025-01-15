@@ -1,41 +1,35 @@
 #pragma once
 
+#include <hex/api/content_registry.hpp>
+#include <hex/api/task_manager.hpp>
 #include <hex/ui/view.hpp>
-#include <hex/api/task.hpp>
-
-#include <array>
-#include <atomic>
-#include <cstdio>
-#include <string>
-#include <vector>
+#include <ui/widgets.hpp>
 
 namespace hex::plugin::builtin {
 
-    class ViewInformation : public View {
+    class ViewInformation : public View::Window {
     public:
         explicit ViewInformation();
-        ~ViewInformation() override;
+        ~ViewInformation() override = default;
 
         void drawContent() override;
 
     private:
-        bool m_dataValid            = false;
-        u32 m_blockSize             = 0;
-        float m_averageEntropy      = 0;
-        float m_highestBlockEntropy = 0;
-        std::vector<float> m_blockEntropy;
-
-        double m_entropyHandlePosition;
-
-        std::array<ImU64, 256> m_valueCounts = { 0 };
-        TaskHolder m_analyzerTask;
-
-        Region m_analyzedRegion = { 0, 0 };
-
-        std::string m_dataDescription;
-        std::string m_dataMimeType;
-
         void analyze();
+
+        struct AnalysisData {
+            bool valid = false;
+
+            TaskHolder task;
+            const prv::Provider *analyzedProvider = nullptr;
+            Region analysisRegion = { 0, 0 };
+
+            ui::RegionType selectionType  = ui::RegionType::EntireData;
+
+            std::list<std::unique_ptr<ContentRegistry::DataInformation::InformationSection>> informationSections;
+        };
+
+        PerProvider<AnalysisData> m_analysisData;
     };
 
 }

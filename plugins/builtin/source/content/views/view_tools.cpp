@@ -2,54 +2,100 @@
 #include <imgui_internal.h>
 
 #include <hex/api/content_registry.hpp>
+#include <hex/api/layout_manager.hpp>
+
+#include <fonts/vscode_icons.hpp>
 
 namespace hex::plugin::builtin {
 
-    ViewTools::ViewTools() : View("hex.builtin.view.tools.name") { }
+    ViewTools::ViewTools() : View::Window("hex.builtin.view.tools.name", ICON_VS_TOOLS) {
+        m_dragStartIterator = ContentRegistry::Tools::impl::getEntries().end();
+
+        LayoutManager::registerLoadCallback([this](std::string_view line) {
+            auto parts = wolv::util::splitString(std::string(line), "=");
+            if (parts.size() != 2)
+                return;
+
+            m_detachedTools[parts[0]] = parts[1] == "1";
+        });
+
+        LayoutManager::registerStoreCallback([this](ImGuiTextBuffer *buffer) {
+            for (auto &[unlocalizedName, function] : ContentRegistry::Tools::impl::getEntries()) {
+                auto detached = m_detachedTools[unlocalizedName];
+                buffer->appendf("%s=%d\n", unlocalizedName.get().c_str(), detached);
+            }
+        });
+    }
 
     void ViewTools::drawContent() {
-        auto &tools = ContentRegistry::Tools::getEntries();
+        auto &tools = ContentRegistry::Tools::impl::getEntries();
 
-        if (ImGui::Begin(View::toWindowName("hex.builtin.view.tools.name").c_str(), &this->getWindowOpenState(), ImGuiWindowFlags_NoCollapse)) {
-            for (auto iter = tools.begin(); iter != tools.end(); iter++) {
-                auto &[name, function, detached] = *iter;
+        // Draw all tools
+        for (auto iter = tools.begin(); iter != tools.end(); ++iter) {
+            auto &[unlocalizedName, function] = *iter;
 
-                if (detached) continue;
+            // If the tool has been detached from the main window, don't draw it here anymore
+            if (m_detachedTools[unlocalizedName]) continue;
 
-                if (ImGui::CollapsingHeader(LangEntry(name))) {
-                    function();
-                } else {
-                    if (ImGui::IsMouseClicked(0) && ImGui::IsItemActivated() && this->m_dragStartIterator == tools.end())
-                        this->m_dragStartIterator = iter;
+            // Draw the tool
+            if (ImGui::CollapsingHeader(Lang(unlocalizedName))) {
+                function();
+                ImGui::NewLine();
+            } else {
+                // Handle dragging the tool out of the main window
 
-                    if (!ImGui::IsItemHovered() && this->m_dragStartIterator == iter) {
-                        detached = true;
-                    }
+                // If the user clicks on the header, start dragging the tool remember the iterator
+                if (ImGui::IsMouseClicked(0) && ImGui::IsItemActivated() && m_dragStartIterator == tools.end())
+                    m_dragStartIterator = iter;
 
-                    if (!ImGui::IsMouseDown(0))
-                        this->m_dragStartIterator = tools.end();
+                // If the user released the mouse button, stop dragging the tool
+                if (!ImGui::IsMouseDown(0))
+                    m_dragStartIterator = tools.end();
+
+                // Detach the tool if the user dragged it out of the main window
+                if (!ImGui::IsItemHovered() && m_dragStartIterator == iter) {
+                    m_detachedTools[unlocalizedName] = true;
                 }
+
             }
         }
-        ImGui::End();
+    }
 
-        for (auto iter = tools.begin(); iter != tools.end(); iter++) {
-            auto &[name, function, detached] = *iter;
+    void ViewTools::drawAlwaysVisibleContent() {
+        // Make sure the tool windows never get drawn over the welcome screen
+        if (!ImHexApi::Provider::isValid())
+            return;
 
-            if (!detached) continue;
+        auto &tools = ContentRegistry::Tools::impl::getEntries();
 
-            ImGui::SetNextWindowSize(scaled(ImVec2(600, 0)));
-            if (ImGui::Begin(View::toWindowName(name).c_str(), &detached, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize)) {
+        for (auto iter = tools.begin(); iter != tools.end(); ++iter) {
+            auto &[unlocalizedName, function] = *iter;
+
+            // If the tool is still attached to the main window, don't draw it here
+            if (!m_detachedTools[unlocalizedName]) continue;
+
+            // Load the window height that is dependent on the tool content
+            const auto windowName = View::toWindowName(unlocalizedName);
+            const auto height = m_windowHeights[ImGui::FindWindowByName(windowName.c_str())];
+            if (height > 0)
+                ImGui::SetNextWindowSizeConstraints(ImVec2(400_scaled, height), ImVec2(FLT_MAX, height));
+
+            // Create a new window for the tool
+            if (ImGui::Begin(windowName.c_str(), &m_detachedTools[unlocalizedName], ImGuiWindowFlags_NoCollapse)) {
+                // Draw the tool content
                 function();
 
-                if (ImGui::IsWindowAppearing() && this->m_dragStartIterator == iter) {
-                    this->m_dragStartIterator = tools.end();
+                // Handle the first frame after the tool has been detached
+                if (ImGui::IsWindowAppearing() && m_dragStartIterator == iter) {
+                    m_dragStartIterator = tools.end();
 
                     // Attach the newly created window to the cursor, so it gets dragged around
-                    GImGui->MovingWindow = ImGui::GetCurrentWindow();
+                    GImGui->MovingWindow = ImGui::GetCurrentWindowRead();
                     GImGui->ActiveId = GImGui->MovingWindow->MoveId;
-                    ImGui::DockContextQueueUndockWindow(GImGui, GImGui->MovingWindow);
                 }
+
+                const auto window = ImGui::GetCurrentWindowRead();
+                m_windowHeights[ImGui::GetCurrentWindowRead()] = ImGui::CalcWindowNextAutoFitSize(window).y;
             }
             ImGui::End();
         }

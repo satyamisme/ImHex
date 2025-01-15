@@ -3,10 +3,12 @@
 #include <hex.hpp>
 
 #include <hex/ui/view.hpp>
-#include <hex/helpers/net.hpp>
-#include <hex/helpers/fs.hpp>
 
-#include <array>
+#include <hex/api/task_manager.hpp>
+#include <hex/helpers/http_requests.hpp>
+#include <hex/helpers/fs.hpp>
+#include <hex/helpers/default_paths.hpp>
+
 #include <future>
 #include <string>
 #include <filesystem>
@@ -17,12 +19,13 @@ namespace hex::plugin::builtin {
         NotAttempted,
         InProgress,
         Failed,
-        Succeded,
+        Succeeded,
     };
 
     struct StoreEntry {
         std::string name;
         std::string description;
+        std::vector<std::string> authors;
         std::string fileName;
         std::string link;
         std::string hash;
@@ -32,37 +35,54 @@ namespace hex::plugin::builtin {
         bool downloading;
         bool installed;
         bool hasUpdate;
+        bool system;
     };
 
-    class ViewStore : public View {
+    struct StoreCategory {
+        UnlocalizedString unlocalizedName;
+        std::string requestName;
+        const paths::impl::DefaultPath* path;
+        std::vector<StoreEntry> entries;
+        std::function<void()> downloadCallback;
+    };
+
+    class ViewStore : public View::Floating {
     public:
         ViewStore();
         ~ViewStore() override = default;
 
         void drawContent() override;
 
-        [[nodiscard]] bool isAvailable() const override { return true; }
+        [[nodiscard]] bool shouldDraw() const override { return true; }
         [[nodiscard]] bool hasViewMenuItemEntry() const override { return false; }
 
-        [[nodiscard]] ImVec2 getMinSize() const override { return { 500, 400 }; }
-        [[nodiscard]] ImVec2 getMaxSize() const override { return { 500, 400 }; }
+        [[nodiscard]] ImVec2 getMinSize() const override { return scaled({ 600, 400 }); }
+        [[nodiscard]] ImVec2 getMaxSize() const override { return scaled({ 900, 700 }); }
 
     private:
-        Net m_net;
-        std::future<Response<std::string>> m_apiRequest;
-        std::future<Response<void>> m_download;
-        std::fs::path m_downloadPath;
-        RequestStatus m_requestStatus = RequestStatus::NotAttempted;
-
-        std::vector<StoreEntry> m_patterns, m_includes, m_magics, m_constants, m_yara, m_encodings;
-
         void drawStore();
+        void drawTab(StoreCategory &category);
+        void handleDownloadFinished(const StoreCategory &category, StoreEntry &entry);
 
         void refresh();
         void parseResponse();
 
-        bool download(fs::ImHexPath pathType, const std::string &fileName, const std::string &url, bool update);
-        bool remove(fs::ImHexPath pathType, const std::string &fileName);
+        void addCategory(const UnlocalizedString &unlocalizedName, const std::string &requestName, const paths::impl::DefaultPath *path, std::function<void()> downloadCallback = []{});
+
+        bool download(const paths::impl::DefaultPath *pathType, const std::string &fileName, const std::string &url);
+        bool remove(const paths::impl::DefaultPath *pathType, const std::string &fileName);
+        void updateAll();
+
+    private:
+        HttpRequest m_httpRequest = HttpRequest("GET", "");
+        std::future<HttpRequest::Result<std::string>> m_apiRequest;
+        std::future<HttpRequest::Result<std::string>> m_download;
+        std::fs::path m_downloadPath;
+        RequestStatus m_requestStatus = RequestStatus::NotAttempted;
+
+        std::vector<StoreCategory> m_categories;
+        TaskHolder m_updateAllTask;
+        std::atomic<u32> m_updateCount = 0;
     };
 
 }

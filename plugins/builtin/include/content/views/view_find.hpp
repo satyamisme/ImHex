@@ -2,18 +2,20 @@
 
 #include <hex.hpp>
 
-#include <imgui.h>
+#include <hex/api/task_manager.hpp>
 #include <hex/ui/view.hpp>
+#include <hex/helpers/binary_pattern.hpp>
 #include <ui/widgets.hpp>
 
-#include <atomic>
 #include <vector>
 
-#include <IntervalTree.h>
+#include <wolv/container/interval_tree.hpp>
+
+#include <hex/api/content_registry.hpp>
 
 namespace hex::plugin::builtin {
 
-    class ViewFind : public View {
+    class ViewFind : public View::Window {
     public:
         ViewFind();
         ~ViewFind() override = default;
@@ -22,18 +24,15 @@ namespace hex::plugin::builtin {
 
     private:
 
-        struct Occurrence {
-            Region region;
-            enum class DecodeType { ASCII, Binary, UTF16, Unsigned, Signed, Float, Double } decodeType;
-            std::endian endian = std::endian::native;
-        };
+        using Occurrence = hex::ContentRegistry::DataFormatter::impl::FindOccurrence;
 
         struct BinaryPattern {
             u8 mask, value;
         };
 
         struct SearchSettings {
-            ui::SelectedRegion range = ui::SelectedRegion::EntireData;
+            ui::RegionType range = ui::RegionType::EntireData;
+            Region region = { 0, 0 };
 
             enum class Mode : int {
                 Strings,
@@ -43,37 +42,49 @@ namespace hex::plugin::builtin {
                 Value
             } mode = Mode::Strings;
 
+            enum class StringType : int { ASCII = 0, UTF8 = 1, UTF16LE = 2, UTF16BE = 3, ASCII_UTF16LE = 4, ASCII_UTF16BE = 5 };
+
             struct Strings {
                 int minLength = 5;
-                enum class Type : int { ASCII = 0, UTF16LE = 1, UTF16BE = 2, ASCII_UTF16LE = 3, ASCII_UTF16BE = 4 } type = Type::ASCII;
                 bool nullTermination = false;
+                StringType type = StringType::ASCII;
 
-                bool m_lowerCaseLetters = true;
-                bool m_upperCaseLetters = true;
-                bool m_numbers = true;
-                bool m_underscores = true;
-                bool m_symbols = true;
-                bool m_spaces = true;
-                bool m_lineFeeds = false;
+                bool lowerCaseLetters = true;
+                bool upperCaseLetters = true;
+                bool numbers = true;
+                bool underscores = true;
+                bool symbols = true;
+                bool spaces = true;
+                bool lineFeeds = false;
             } strings;
 
             struct Sequence {
                 std::string sequence;
+
+                StringType type = StringType::ASCII;
+                bool ignoreCase = false;
             } bytes;
 
             struct Regex {
+                int minLength = 5;
+                bool nullTermination = false;
+                StringType type = StringType::ASCII;
+
                 std::string pattern;
                 bool fullMatch = true;
             } regex;
 
             struct BinaryPattern {
                 std::string input;
-                std::vector<ViewFind::BinaryPattern> pattern;
+                hex::BinaryPattern pattern;
+                u32 alignment = 1;
             } binaryPattern;
 
             struct Value {
                 std::string inputMin, inputMax;
                 std::endian endian = std::endian::native;
+                bool aligned = false;
+                bool range = false;
 
                 enum class Type {
                     U8 = 0, U16 = 1, U32 = 2, U64 = 3,
@@ -84,14 +95,16 @@ namespace hex::plugin::builtin {
 
         } m_searchSettings, m_decodeSettings;
 
-        using OccurrenceTree = interval_tree::IntervalTree<u64, Occurrence>;
+        using OccurrenceTree = wolv::container::IntervalTree<Occurrence>;
 
-        std::map<prv::Provider*, std::vector<Occurrence>> m_foundOccurrences, m_sortedOccurrences;
-        std::map<prv::Provider*, OccurrenceTree> m_occurrenceTree;
-        std::map<prv::Provider*, std::string> m_currFilter;
+        PerProvider<std::vector<Occurrence>> m_foundOccurrences, m_sortedOccurrences;
+        PerProvider<Occurrence*> m_lastSelectedOccurrence;
+        PerProvider<OccurrenceTree> m_occurrenceTree;
+        PerProvider<std::string> m_currFilter;
 
-        TaskHolder m_searchTask;
+        TaskHolder m_searchTask, m_filterTask;
         bool m_settingsValid = false;
+        std::string m_replaceBuffer;
 
     private:
         static std::vector<Occurrence> searchStrings(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::Strings &settings);
@@ -100,11 +113,13 @@ namespace hex::plugin::builtin {
         static std::vector<Occurrence> searchBinaryPattern(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::BinaryPattern &settings);
         static std::vector<Occurrence> searchValue(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::Value &settings);
 
+        void drawContextMenu(Occurrence &target, const std::string &value);
+
         static std::vector<BinaryPattern> parseBinaryPatternString(std::string string);
         static std::tuple<bool, std::variant<u64, i64, float, double>, size_t> parseNumericValueInput(const std::string &input, SearchSettings::Value::Type type);
 
         void runSearch();
-        std::string decodeValue(prv::Provider *provider, Occurrence occurrence) const;
+        std::string decodeValue(prv::Provider *provider, const Occurrence &occurrence, size_t maxBytes = 0xFFFF'FFFF) const;
     };
 
 }

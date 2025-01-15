@@ -1,264 +1,295 @@
 #include <hex/api/content_registry.hpp>
 #include <hex/api/imhex_api.hpp>
-#include <hex/api/localization.hpp>
+#include <hex/api/localization_manager.hpp>
+#include <hex/api/task_manager.hpp>
 
 #include <hex/ui/view.hpp>
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/fmt.hpp>
 #include <hex/helpers/logger.hpp>
+#include <hex/helpers/debugging.hpp>
 
-#include <fonts/codicons_font.h>
+#include <fonts/vscode_icons.hpp>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <implot.h>
+#include <implot3d.h>
 #include <hex/ui/imgui_imhex_extensions.h>
+
+#include <toasts/toast_notification.hpp>
+
+#include <csignal>
 
 namespace hex::plugin::builtin {
 
-    static std::string s_popupMessage;
-    static std::function<void()> s_yesCallback, s_noCallback;
-    static u32 s_selectableFileIndex;
-    static std::vector<std::fs::path> s_selectableFiles;
-    static std::function<void(std::fs::path)> s_selectableFileOpenCallback;
-    static std::vector<nfdfilteritem_t> s_selectableFilesValidExtensions;
+    void addTitleBarButtons() {
+        #if defined(DEBUG)
+            ContentRegistry::Interface::addTitleBarButton(ICON_VS_DEBUG, "hex.builtin.title_bar_button.debug_build", []{
+                if (ImGui::GetIO().KeyShift) {
+                    RequestOpenPopup::post("DebugMenu");
+                } else {
+                    hex::openWebpage("https://imhex.werwolv.net/debug");
+                }
+            });
+        #endif
+
+        ContentRegistry::Interface::addTitleBarButton(ICON_VS_SMILEY, "hex.builtin.title_bar_button.feedback", []{
+            hex::openWebpage("https://github.com/WerWolv/ImHex/discussions/categories/feedback");
+        });
+
+    }
 
     static void drawGlobalPopups() {
-
-        // "Are you sure you want to exit?" Popup
-        if (ImGui::BeginPopupModal("hex.builtin.popup.exit_application.title"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::NewLine();
-            ImGui::TextUnformatted("hex.builtin.popup.exit_application.desc"_lang);
-            ImGui::NewLine();
-
-            View::confirmButtons("hex.builtin.common.yes"_lang, "hex.builtin.common.no"_lang,
-                                 [] { ImHexApi::Common::closeImHex(true); },
-                                 [] { ImGui::CloseCurrentPopup(); }
-                                 );
-
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::EndPopup();
-        }
-
-        // "Are you sure you want to close provider?" Popup
-        if (ImGui::BeginPopupModal("hex.builtin.popup.close_provider.title"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::NewLine();
-            ImGui::TextUnformatted("hex.builtin.popup.close_provider.desc"_lang);
-            ImGui::NewLine();
-
-            View::confirmButtons("hex.builtin.common.yes"_lang, "hex.builtin.common.no"_lang,
-                                 [] { ImHexApi::Provider::remove(ImHexApi::Provider::impl::getClosingProvider(), true); ImGui::CloseCurrentPopup(); },
-                                 [] { ImGui::CloseCurrentPopup(); }
-                                 );
-
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::EndPopup();
-        }
-
-        auto windowSize = ImHexApi::System::getMainWindowSize();
-
-        // Info popup
-        ImGui::SetNextWindowSizeConstraints(scaled(ImVec2(400, 100)), scaled(ImVec2(600, 300)));
-        if (ImGui::BeginPopupModal("hex.builtin.common.info"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextFormattedWrapped("{}", s_popupMessage.c_str());
-            ImGui::NewLine();
-            ImGui::Separator();
-            if (ImGui::Button("hex.builtin.common.okay"_lang) || ImGui::IsKeyDown(ImGuiKey_Escape))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::SetWindowPos((windowSize - ImGui::GetWindowSize()) / 2, ImGuiCond_Appearing);
-            ImGui::EndPopup();
-        }
-
-        // Error popup
-        ImGui::SetNextWindowSizeConstraints(scaled(ImVec2(400, 100)), scaled(ImVec2(600, 300)));
-        if (ImGui::BeginPopupModal("hex.builtin.common.error"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextFormattedWrapped("{}", s_popupMessage.c_str());
-            ImGui::NewLine();
-            ImGui::Separator();
-            if (ImGui::Button("hex.builtin.common.okay"_lang) || ImGui::IsKeyDown(ImGuiKey_Escape))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::SetWindowPos((windowSize - ImGui::GetWindowSize()) / 2, ImGuiCond_Appearing);
-            ImGui::EndPopup();
-        }
-
-        // Fatal error popup
-        ImGui::SetNextWindowSizeConstraints(scaled(ImVec2(400, 100)), scaled(ImVec2(600, 300)));
-        if (ImGui::BeginPopupModal("hex.builtin.common.fatal"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextFormattedWrapped("{}", s_popupMessage.c_str());
-            ImGui::NewLine();
-            ImGui::Separator();
-            if (ImGui::Button("hex.builtin.common.okay"_lang) || ImGui::IsKeyDown(ImGuiKey_Escape)) {
-                ImHexApi::Common::closeImHex();
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::SetWindowPos((windowSize - ImGui::GetWindowSize()) / 2, ImGuiCond_Appearing);
-            ImGui::EndPopup();
-        }
-
-        // Yes/No question popup
-        ImGui::SetNextWindowSizeConstraints(scaled(ImVec2(400, 100)), scaled(ImVec2(600, 300)));
-        if (ImGui::BeginPopupModal("hex.builtin.common.question"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextFormattedWrapped("{}", s_popupMessage.c_str());
-            ImGui::NewLine();
-            ImGui::Separator();
-
-            View::confirmButtons(
-                    "hex.builtin.common.yes"_lang, "hex.builtin.common.no"_lang, [] {
-                        s_yesCallback();
-                        ImGui::CloseCurrentPopup(); }, [] {
-                        s_noCallback();
-                        ImGui::CloseCurrentPopup(); });
-
-            ImGui::SetWindowPos((windowSize - ImGui::GetWindowSize()) / 2, ImGuiCond_Appearing);
-            ImGui::EndPopup();
-        }
-
-        // File chooser popup
-        bool opened = true;
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-        if (ImGui::BeginPopupModal("hex.builtin.common.choose_file"_lang, &opened, ImGuiWindowFlags_AlwaysAutoResize)) {
-
-            if (ImGui::BeginListBox("##files", ImVec2(300_scaled, 0))) {
-
-                u32 index = 0;
-                for (auto &path : s_selectableFiles) {
-                    ImGui::PushID(index);
-                    if (ImGui::Selectable(hex::toUTF8String(path.filename()).c_str(), index == s_selectableFileIndex))
-                        s_selectableFileIndex = index;
-                    ImGui::PopID();
-
-                    index++;
-                }
-
-                ImGui::EndListBox();
-            }
-
-            if (ImGui::Button("hex.builtin.common.open"_lang)) {
-                s_selectableFileOpenCallback(s_selectableFiles[s_selectableFileIndex]);
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("hex.builtin.common.browse"_lang)) {
-                fs::openFileBrowser(fs::DialogMode::Open, s_selectableFilesValidExtensions, [](const auto &path) {
-                    s_selectableFileOpenCallback(path);
-                    ImGui::CloseCurrentPopup();
-                });
-            }
-
-            ImGui::EndPopup();
-        }
-
-        // Task exception popup
+        // Task exception toast
         for (const auto &task : TaskManager::getRunningTasks()) {
             if (task->hadException()) {
-                EventManager::post<RequestShowErrorPopup>(hex::format("hex.builtin.popup.error.task_exception"_lang, LangEntry(task->getUnlocalizedName()), task->getExceptionMessage()));
+                ui::ToastError::open(hex::format("hex.builtin.popup.error.task_exception"_lang, Lang(task->getUnlocalizedName()), task->getExceptionMessage()));
                 task->clearException();
                 break;
             }
         }
     }
 
+    #if defined(DEBUG)
+
+        static void drawDebugPopup() {
+            static bool showImGuiDemo = false;
+            static bool showImPlotDemo = false;
+            static bool showImPlot3DDemo = false;
+
+            ImGui::SetNextWindowSize(scaled({ 300, 150 }), ImGuiCond_Always);
+            if (ImGui::BeginPopup("DebugMenu")) {
+                if (ImGui::BeginTabBar("DebugTabBar")) {
+                    if (ImGui::BeginTabItem("ImHex")) {
+                        if (ImGui::BeginChild("Scrolling", ImGui::GetContentRegionAvail())) {
+                            ImGui::Checkbox("Show Debug Variables", &dbg::impl::getDebugWindowState());
+
+                            ImGuiExt::Header("Information");
+                            ImGuiExt::TextFormatted("Running Tasks: {0}", TaskManager::getRunningTaskCount());
+                            ImGuiExt::TextFormatted("Running Background Tasks: {0}", TaskManager::getRunningBackgroundTaskCount());
+                            ImGuiExt::TextFormatted("Last Frame Time: {0:.3f}ms", ImHexApi::System::getLastFrameTime() * 1000.0F);
+                        }
+                        ImGui::EndChild();
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("ImGui")) {
+                        if (ImGui::BeginChild("Scrolling", ImGui::GetContentRegionAvail())) {
+                            auto ctx = ImGui::GetCurrentContext();
+                            ImGui::Checkbox("Show ImGui Demo", &showImGuiDemo);
+                            ImGui::Checkbox("Show ImPlot Demo", &showImPlotDemo);
+                            ImGui::Checkbox("Show ImPlot3D Demo", &showImPlot3DDemo);
+
+                            if (ImGui::Button("Trigger Breakpoint in Item") || ctx->DebugItemPickerActive)
+                                ImGui::DebugStartItemPicker();
+                        }
+                        ImGui::EndChild();
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Crashes")) {
+                        if (ImGui::BeginChild("Scrolling", ImGui::GetContentRegionAvail())) {
+                            if (ImGui::Button("Throw Exception")) {
+                                TaskManager::doLater([] {
+                                    throw std::runtime_error("Test exception");
+                                });
+                            }
+                            if (ImGui::Button("Access Invalid Memory")) {
+                                TaskManager::doLater([] {
+                                    *reinterpret_cast<u32*>(0x10) = 0x10;
+                                    std::unreachable();
+                                });
+                            }
+                            if (ImGui::Button("Raise SIGSEGV")) {
+                                TaskManager::doLater([] {
+                                    raise(SIGSEGV);
+                                });
+                            }
+                            if (ImGui::Button("Corrupt Memory")) {
+                                TaskManager::doLater([] {
+                                    auto bytes = new u8[0xFFFFF];
+
+                                    delete[] bytes;
+                                    delete[] bytes;
+                                });
+                            }
+                        }
+                        ImGui::EndChild();
+
+                        ImGui::EndTabItem();
+                    }
+
+                    ImGui::EndTabBar();
+                }
+                ImGui::EndPopup();
+            }
+
+            if (showImGuiDemo)
+                ImGui::ShowDemoWindow(&showImGuiDemo);
+            if (showImPlotDemo)
+                ImPlot::ShowDemoWindow(&showImPlotDemo);
+            if (showImPlot3DDemo)
+                ImPlot3D::ShowDemoWindow(&showImPlot3DDemo);
+        }
+
+    #endif
+
+    static bool s_drawDragDropOverlay = false;
+    static void drawDragNDropOverlay() {
+        if (!s_drawDragDropOverlay)
+            return;
+
+        auto drawList = ImGui::GetForegroundDrawList();
+
+        drawList->PushClipRectFullScreen();
+        {
+            const auto windowPos = ImHexApi::System::getMainWindowPosition();
+            const auto windowSize = ImHexApi::System::getMainWindowSize();
+            const auto center = windowPos + (windowSize / 2.0F) - scaled({ 0, 50 });
+
+            // Draw background
+            {
+                const ImVec2 margin = scaled({ 15, 15 });
+                drawList->AddRectFilled(windowPos, windowPos + windowSize, ImGui::GetColorU32(ImGuiCol_WindowBg, 200.0/255.0));
+                drawList->AddRect(windowPos + margin, (windowPos + windowSize) - margin, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_Highlight), 10_scaled, ImDrawFlags_None, 7.5_scaled);
+            }
+
+            // Draw drag n drop icon
+            {
+                const ImVec2 iconSize = scaled({ 64, 64 });
+                const auto offset = scaled({ 15, 15 });
+                const auto margin = scaled({ 20, 20 });
+
+                const auto text = "hex.builtin.drag_drop.text"_lang;
+                const auto textSize = ImGui::CalcTextSize(text);
+
+                drawList->AddShadowRect(center - ImVec2(textSize.x, iconSize.y + 40_scaled) / 2.0F - offset - margin, center + ImVec2(textSize.x, iconSize.y + 75_scaled) / 2.0F + offset + ImVec2(0, textSize.y) + margin, ImGui::GetColorU32(ImGuiCol_WindowShadow), 20_scaled, ImVec2(), ImDrawFlags_None, 10_scaled);
+                drawList->AddRectFilled(center - ImVec2(textSize.x, iconSize.y + 40_scaled) / 2.0F - offset - margin, center + ImVec2(textSize.x, iconSize.y + 75_scaled) / 2.0F + offset + ImVec2(0, textSize.y) + margin, ImGui::GetColorU32(ImGuiCol_MenuBarBg, 10), 1_scaled, ImDrawFlags_None);
+                drawList->AddRect(center - iconSize / 2.0F - offset, center + iconSize / 2.0F - offset, ImGui::GetColorU32(ImGuiCol_Text), 5_scaled, ImDrawFlags_None, 7.5_scaled);
+                drawList->AddRect(center - iconSize / 2.0F + offset, center + iconSize / 2.0F + offset, ImGui::GetColorU32(ImGuiCol_Text), 5_scaled, ImDrawFlags_None, 7.5_scaled);
+
+                drawList->AddText(center + ImVec2(-textSize.x / 2, 85_scaled), ImGui::GetColorU32(ImGuiCol_Text), text);
+            }
+        }
+        drawList->PopClipRect();
+    }
+
     void addGlobalUIItems() {
-        EventManager::subscribe<EventFrameEnd>(drawGlobalPopups);
+        EventFrameEnd::subscribe(drawGlobalPopups);
+        EventFrameEnd::subscribe(drawDragNDropOverlay);
 
-        EventManager::subscribe<RequestShowInfoPopup>([](const std::string &message) {
-            s_popupMessage = message;
+        #if defined(DEBUG)
+            EventFrameEnd::subscribe(drawDebugPopup);
+        #endif
 
-            TaskManager::doLater([] { ImGui::OpenPopup("hex.builtin.common.info"_lang); });
-        });
-
-        EventManager::subscribe<RequestShowErrorPopup>([](const std::string &message) {
-            s_popupMessage = message;
-
-            TaskManager::doLater([] { ImGui::OpenPopup("hex.builtin.common.error"_lang); });
-        });
-
-        EventManager::subscribe<RequestShowFatalErrorPopup>([](const std::string &message) {
-            s_popupMessage = message;
-
-            TaskManager::doLater([] { ImGui::OpenPopup("hex.builtin.common.fatal"_lang); });
-        });
-
-        EventManager::subscribe<RequestShowYesNoQuestionPopup>([](const std::string &message, const std::function<void()> &yesCallback, const std::function<void()> &noCallback) {
-            s_popupMessage = message;
-
-            s_yesCallback = yesCallback;
-            s_noCallback  = noCallback;
-
-            TaskManager::doLater([] { ImGui::OpenPopup("hex.builtin.common.question"_lang); });
-        });
-
-        EventManager::subscribe<RequestShowFileChooserPopup>([](const std::vector<std::fs::path> &paths, const std::vector<nfdfilteritem_t> &validExtensions, const std::function<void(std::fs::path)> &callback) {
-            s_selectableFileIndex            = 0;
-            s_selectableFiles                = paths;
-            s_selectableFilesValidExtensions = validExtensions;
-            s_selectableFileOpenCallback     = callback;
-
-            TaskManager::doLater([] { ImGui::OpenPopup("hex.builtin.common.choose_file"_lang); });
+        EventFileDragged::subscribe([](bool entered) {
+            s_drawDragDropOverlay = entered;
         });
     }
 
     void addFooterItems() {
-
         if (hex::isProcessElevated()) {
             ContentRegistry::Interface::addFooterItem([] {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_Highlight));
                 ImGui::TextUnformatted(ICON_VS_SHIELD);
+                ImGui::PopStyleColor();
             });
         }
 
         #if defined(DEBUG)
             ContentRegistry::Interface::addFooterItem([] {
                 static float framerate = 0;
-                if (ImGui::HasSecondPassed()) {
+                if (ImGuiExt::HasSecondPassed()) {
                     framerate = 1.0F / ImGui::GetIO().DeltaTime;
                 }
 
-                ImGui::TextFormatted("FPS {0:2}.{1:02}", u32(framerate), u32(framerate * 100) % 100);
+                ImGuiExt::TextFormatted("FPS {0:3}.{1:02}", u32(framerate), u32(framerate * 100) % 100);
+
+                if (ImGui::IsItemHovered()) {
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2());
+                    if (ImGui::BeginTooltip()) {
+
+                        static u32 frameCount = 0;
+                        static double largestFrameTime = 0;
+                        if (ImPlot::BeginPlot("##frame_time_graph", scaled({ 200, 100 }), ImPlotFlags_CanvasOnly | ImPlotFlags_NoFrame | ImPlotFlags_NoInputs)) {
+                            ImPlot::SetupAxes("", "", ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_LockMin | ImPlotAxisFlags_AutoFit);
+                            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, largestFrameTime * 1.25F, ImPlotCond_Always);
+                            ImPlot::SetupAxisFormat(ImAxis_Y1, [](double value, char* buff, int size, void*) -> int {
+                                return snprintf(buff, size, "%dms", int(value * 1000.0));
+                            }, nullptr);
+                            ImPlot::SetupAxisTicks(ImAxis_Y1, 0, largestFrameTime * 1.25F, 3);
+
+                            static std::vector<double> values(100);
+
+                            values.push_back(ImHexApi::System::getLastFrameTime());
+                            if (values.size() > 100)
+                                values.erase(values.begin());
+
+                            if (frameCount % 100 == 0)
+                                largestFrameTime = *std::ranges::max_element(values);
+                            frameCount += 1;
+
+                            ImPlot::PlotLine("FPS", values.data(), values.size());
+                            ImPlot::EndPlot();
+                        }
+                        ImGui::EndTooltip();
+                    }
+                    ImGui::PopStyleVar();
+                }
             });
         #endif
 
         ContentRegistry::Interface::addFooterItem([] {
+            static bool shouldResetProgress = false;
+
             auto taskCount = TaskManager::getRunningTaskCount();
             if (taskCount > 0) {
-                auto &tasks = TaskManager::getRunningTasks();
-                auto frontTask = tasks.front();
+                const auto &tasks = TaskManager::getRunningTasks();
+                const auto &frontTask = tasks.front();
 
-                auto widgetStart = ImGui::GetCursorPos();
+                if (frontTask == nullptr)
+                    return;
 
-                ImGui::TextSpinner(hex::format("({})", taskCount).c_str());
-                ImGui::SameLine();
-                ImGui::SmallProgressBar(frontTask->getMaxValue() == 0 ? 1 : (float(frontTask->getValue()) / frontTask->getMaxValue()), (ImGui::GetCurrentWindow()->MenuBarHeight() - 10_scaled) / 2.0);
-                ImGui::SameLine();
+                const auto progress = frontTask->getMaxValue() == 0 ? -1 : float(frontTask->getValue()) / float(frontTask->getMaxValue());
 
-                auto widgetEnd = ImGui::GetCursorPos();
+                ImHexApi::System::setTaskBarProgress(ImHexApi::System::TaskProgressState::Progress, ImHexApi::System::TaskProgressType::Normal, u32(progress * 100));
+
+                const auto widgetStart = ImGui::GetCursorPos();
+                {
+                    ImGuiExt::TextSpinner(hex::format("({})", taskCount).c_str());
+                    ImGui::SameLine();
+                    ImGuiExt::SmallProgressBar(progress, (ImGui::GetCurrentWindowRead()->MenuBarHeight - 10_scaled) / 2.0);
+                    ImGui::SameLine();
+                }
+                const auto widgetEnd = ImGui::GetCursorPos();
+
                 ImGui::SetCursorPos(widgetStart);
-                ImGui::InvisibleButton("FrontTask", ImVec2(widgetEnd.x - widgetStart.x, ImGui::GetCurrentWindow()->MenuBarHeight()));
+                ImGui::InvisibleButton("RestTasks", ImVec2(widgetEnd.x - widgetStart.x, ImGui::GetCurrentWindowRead()->MenuBarHeight));
                 ImGui::SetCursorPos(widgetEnd);
 
-                ImGui::InfoTooltip(LangEntry(frontTask->getUnlocalizedName()).get().c_str());
+                std::string progressString;
+                if (progress < 0)
+                    progressString = "";
+                else
+                    progressString = hex::format("[ {}/{} ({:.1f}%) ] ", frontTask->getValue(), frontTask->getMaxValue(), std::min(progress, 1.0F) * 100.0F);
 
-                if (ImGui::BeginPopupContextItem("FrontTask", ImGuiPopupFlags_MouseButtonLeft)) {
+                ImGuiExt::InfoTooltip(hex::format("{}{}", progressString, Lang(frontTask->getUnlocalizedName())).c_str());
+
+                if (ImGui::BeginPopupContextItem("RestTasks", ImGuiPopupFlags_MouseButtonLeft)) {
                     for (const auto &task : tasks) {
                         if (task->isBackgroundTask())
                             continue;
 
                         ImGui::PushID(&task);
-                        ImGui::TextFormatted("{}", LangEntry(task->getUnlocalizedName()));
+                        ImGuiExt::TextFormatted("{}", Lang(task->getUnlocalizedName()));
                         ImGui::SameLine();
                         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
                         ImGui::SameLine();
-                        ImGui::SmallProgressBar(frontTask->getMaxValue() == 0 ? 1 : (float(frontTask->getValue()) / frontTask->getMaxValue()), (ImGui::GetTextLineHeightWithSpacing() - 5_scaled) / 2);
+                        ImGuiExt::SmallProgressBar(task->getMaxValue() == 0 ? -1 : (float(task->getValue()) / float(task->getMaxValue())), (ImGui::GetTextLineHeightWithSpacing() - 5_scaled) / 2);
                         ImGui::SameLine();
 
                         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-                        if (ImGui::ToolBarButton(ICON_VS_DEBUG_STOP, ImGui::GetStyleColorVec4(ImGuiCol_Text)))
+                        if (ImGuiExt::ToolBarButton(ICON_VS_DEBUG_STOP, ImGui::GetStyleColorVec4(ImGuiCol_Text)))
                             task->interrupt();
                         ImGui::PopStyleVar();
 
@@ -270,120 +301,197 @@ namespace hex::plugin::builtin {
                 ImGui::SameLine();
 
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(ImVec2(1, 2)));
-                if (ImGui::ToolBarButton(ICON_VS_DEBUG_STOP, ImGui::GetStyleColorVec4(ImGuiCol_Text)))
+                if (ImGuiExt::ToolBarButton(ICON_VS_DEBUG_STOP, ImGui::GetStyleColorVec4(ImGuiCol_Text)))
                     frontTask->interrupt();
                 ImGui::PopStyleVar();
+
+                shouldResetProgress = true;
+            } else {
+                if (shouldResetProgress) {
+                    ImHexApi::System::setTaskBarProgress(ImHexApi::System::TaskProgressState::Reset, ImHexApi::System::TaskProgressType::Normal, 0);
+                    shouldResetProgress = false;
+                }
             }
         });
     }
 
+    static void drawProviderContextMenu(prv::Provider *provider) {
+        for (const auto &menuEntry : provider->getMenuEntries()) {
+            if (ImGui::MenuItemEx(menuEntry.name.c_str(), menuEntry.icon)) {
+                menuEntry.callback();
+            }
+        }
+    }
+
+    void drawProviderTooltip(const prv::Provider *provider) {
+        if (ImGuiExt::InfoTooltip()) {
+            ImGui::BeginTooltip();
+
+            ImGuiExt::TextFormatted("{}", provider->getName().c_str());
+
+            const auto &description = provider->getDataDescription();
+            if (!description.empty()) {
+                ImGui::Separator();
+                if (ImGui::GetIO().KeyShift && !description.empty()) {
+
+                    if (ImGui::BeginTable("information", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoKeepColumnsVisible, ImVec2(400_scaled, 0))) {
+                        ImGui::TableSetupColumn("type");
+                        ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+
+                        ImGui::TableNextRow();
+
+                        for (auto &[name, value] : description) {
+                            ImGui::TableNextColumn();
+                            ImGuiExt::TextFormatted("{}", name);
+                            ImGui::TableNextColumn();
+                            ImGuiExt::TextFormattedWrapped("{}", value);
+                        }
+
+                        ImGui::EndTable();
+                    }
+                } else {
+                    ImGuiExt::TextFormattedDisabled("hex.builtin.provider.tooltip.show_more"_lang);
+                }
+            }
+
+            ImGui::EndTooltip();
+        }
+    }
+
     void addToolbarItems() {
+        ShortcutManager::addGlobalShortcut(AllowWhileTyping + ALT + CTRLCMD + Keys::Left, "hex.builtin.shortcut.prev_provider", []{
+            auto currIndex = ImHexApi::Provider::getCurrentProviderIndex();
+
+            if (currIndex > 0)
+                ImHexApi::Provider::setCurrentProvider(currIndex - 1);
+        });
+
+        ShortcutManager::addGlobalShortcut(AllowWhileTyping + ALT + CTRLCMD + Keys::Right, "hex.builtin.shortcut.next_provider", []{
+            auto currIndex = ImHexApi::Provider::getCurrentProviderIndex();
+
+            const auto &providers = ImHexApi::Provider::getProviders();
+            if (currIndex < i64(providers.size() - 1))
+                ImHexApi::Provider::setCurrentProvider(currIndex + 1);
+        });
+
+        static bool providerJustChanged = true;
+        EventProviderChanged::subscribe([](auto, auto) { providerJustChanged = true; });
+
+        static prv::Provider *rightClickedProvider = nullptr;
+        EventSearchBoxClicked::subscribe([](ImGuiMouseButton button){
+            if (button == ImGuiMouseButton_Right) {
+                rightClickedProvider = ImHexApi::Provider::get();
+                RequestOpenPopup::post("ProviderMenu");
+            }
+        });
+
+        EventFrameBegin::subscribe([] {
+            if (rightClickedProvider != nullptr && !rightClickedProvider->getMenuEntries().empty()) {
+                if (ImGui::BeginPopup("ProviderMenu")) {
+                    drawProviderContextMenu(rightClickedProvider);
+                    ImGui::EndPopup();
+                }
+            }
+        });
+
+        EventProviderChanged::subscribe([](auto, auto){
+            rightClickedProvider = nullptr;
+        });
+
+        static bool alwaysShowProviderTabs = false;
+        ContentRegistry::Settings::onChange("hex.builtin.setting.interface", "hex.builtin.setting.interface.always_show_provider_tabs", [](const ContentRegistry::Settings::SettingsValue &value) {
+            alwaysShowProviderTabs = value.get<bool>(false);
+        });
+
+        // Toolbar items
         ContentRegistry::Interface::addToolbarItem([] {
-            auto provider      = ImHexApi::Provider::get();
-            bool providerValid = provider != nullptr;
-            bool tasksRunning  = TaskManager::getRunningTaskCount() > 0;
 
-            // Undo
-            ImGui::BeginDisabled(!providerValid || !provider->canUndo());
-            {
-                if (ImGui::ToolBarButton(ICON_VS_DISCARD, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarBlue)))
-                    provider->undo();
-            }
-            ImGui::EndDisabled();
-
-            // Redo
-            ImGui::BeginDisabled(!providerValid || !provider->canRedo());
-            {
-                if (ImGui::ToolBarButton(ICON_VS_REDO, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarBlue)))
-                    provider->redo();
-            }
-            ImGui::EndDisabled();
-
-            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-
-            ImGui::BeginDisabled(tasksRunning);
-            {
-                // Create new file
-                if (ImGui::ToolBarButton(ICON_VS_FILE, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarGray))) {
-                    auto newProvider = hex::ImHexApi::Provider::createProvider("hex.builtin.provider.mem_file", true);
-                    if (newProvider != nullptr && !newProvider->open())
-                        hex::ImHexApi::Provider::remove(newProvider);
-                    else
-                        EventManager::post<EventProviderOpened>(newProvider);
+            for (const auto &menuItem : ContentRegistry::Interface::impl::getToolbarMenuItems()) {
+                const auto &unlocalizedItemName = menuItem->unlocalizedNames.back();
+                if (unlocalizedItemName.get() == ContentRegistry::Interface::impl::SeparatorValue) {
+                    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                    continue;
                 }
 
-                // Open file
-                if (ImGui::ToolBarButton(ICON_VS_FOLDER_OPENED, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarBrown)))
-                    EventManager::post<RequestOpenWindow>("Open File");
-            }
-            ImGui::EndDisabled();
-
-            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-
-            // Save file
-            ImGui::BeginDisabled(!providerValid || !provider->isWritable() || !provider->isSavable());
-            {
-                if (ImGui::ToolBarButton(ICON_VS_SAVE, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarBlue)))
-                    provider->save();
-            }
-            ImGui::EndDisabled();
-
-            // Save file as
-            ImGui::BeginDisabled(!providerValid || !provider->isSavable());
-            {
-                if (ImGui::ToolBarButton(ICON_VS_SAVE_AS, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarBlue)))
-                    fs::openFileBrowser(fs::DialogMode::Save, {}, [&provider](auto path) {
-                        provider->saveAs(path);
-                    });
-            }
-            ImGui::EndDisabled();
-
-
-            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-
-
-            // Create bookmark
-            ImGui::BeginDisabled(!providerValid || !provider->isReadable() || !ImHexApi::HexEditor::isSelectionValid());
-            {
-                if (ImGui::ToolBarButton(ICON_VS_BOOKMARK, ImGui::GetCustomColorVec4(ImGuiCustomCol_ToolbarGreen))) {
-                    auto region = ImHexApi::HexEditor::getSelection();
-
-                    if (region.has_value())
-                        ImHexApi::Bookmarks::add(region->getStartAddress(), region->getSize(), {}, {});
+                ImGui::BeginDisabled(!menuItem->enabledCallback());
+                if (ImGuiExt::ToolBarButton(menuItem->icon.glyph.c_str(), ImGuiExt::GetCustomColorVec4(ImGuiCustomCol(menuItem->icon.color)))) {
+                    menuItem->callback();
                 }
+                ImGuiExt::InfoTooltip(Lang(unlocalizedItemName));
+
+                ImGui::EndDisabled();
             }
-            ImGui::EndDisabled();
+        });
+
+        // Provider switcher
+        ContentRegistry::Interface::addToolbarItem([] {
+            const bool providerValid = ImHexApi::Provider::get() != nullptr;
+            const bool tasksRunning  = TaskManager::getRunningTaskCount() > 0;
 
             ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
             ImGui::Spacing();
             ImGui::Spacing();
             ImGui::Spacing();
 
-            // Provider switcher
             ImGui::BeginDisabled(!providerValid || tasksRunning);
             {
-                auto &providers = ImHexApi::Provider::getProviders();
+                auto providers = ImHexApi::Provider::getProviders();
 
-                ImGui::PushStyleColor(ImGuiCol_TabActive, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
-                ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
+                ImGui::PushStyleColor(ImGuiCol_TabSelected, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
+                ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImGui::GetColorU32(ImGuiCol_MenuBarBg));
+
+                ImGui::GetCurrentWindow()->WorkRect.Max.x -= 25_scaled;
                 auto providerSelectorVisible = ImGui::BeginTabBar("provider_switcher", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs);
                 ImGui::PopStyleColor(2);
 
                 if (providerSelectorVisible) {
                     for (size_t i = 0; i < providers.size(); i++) {
+                        if (providers.size() == 1 && !alwaysShowProviderTabs)
+                            break;
+
                         auto &tabProvider = providers[i];
+                        const auto selectedProviderIndex = ImHexApi::Provider::getCurrentProviderIndex();
+
+                        const auto closingProviders = ImHexApi::Provider::impl::getClosingProviders();
+                        if (std::ranges::find(closingProviders, tabProvider) != closingProviders.end())
+                            continue;
 
                         bool open = true;
                         ImGui::PushID(tabProvider);
-                        if (ImGui::BeginTabItem(tabProvider->getName().c_str(), &open, tabProvider->isDirty() ? ImGuiTabItemFlags_UnsavedDocument : ImGuiTabItemFlags_None)) {
-                            ImHexApi::Provider::setCurrentProvider(i);
+
+                        ImGuiTabItemFlags flags = ImGuiTabItemFlags_NoTooltip;
+                        if (tabProvider->isDirty())
+                            flags |= ImGuiTabItemFlags_UnsavedDocument;
+                        if (i64(i) == selectedProviderIndex && providerJustChanged) {
+                            flags |= ImGuiTabItemFlags_SetSelected;
+                            providerJustChanged = false;
+                        }
+
+                        static size_t lastSelectedProvider = 0;
+
+                        bool isSelected = false;
+                        if (ImGui::BeginTabItem(tabProvider->getName().c_str(), &open, flags)) {
+                            isSelected = true;
                             ImGui::EndTabItem();
                         }
+
+                        if (isSelected && lastSelectedProvider != i) {
+                            ImHexApi::Provider::setCurrentProvider(i);
+                            lastSelectedProvider = i;
+                        }
+
+                        drawProviderTooltip(tabProvider);
+
                         ImGui::PopID();
 
                         if (!open) {
                             ImHexApi::Provider::remove(providers[i]);
                             break;
+                        }
+
+                        if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+                            rightClickedProvider = tabProvider;
+                            RequestOpenPopup::post("ProviderMenu");
                         }
                     }
                     ImGui::EndTabBar();
@@ -392,19 +500,13 @@ namespace hex::plugin::builtin {
             ImGui::EndDisabled();
         });
 
-    }
-
-    void handleBorderlessWindowMode() {
-        // Intel's OpenGL driver has weird bugs that cause the drawn window to be offset to the bottom right.
-        // This can be fixed by either using Mesa3D's OpenGL Software renderer or by simply disabling it.
-        // If you want to try if it works anyways on your GPU, set the hex.builtin.setting.interface.force_borderless_window_mode setting to 1
-        if (ImHexApi::System::isBorderlessWindowModeEnabled()) {
-            bool isIntelGPU = hex::containsIgnoreCase(ImHexApi::System::getGPUVendor(), "Intel");
-            ImHexApi::System::impl::setBorderlessWindowMode(!isIntelGPU);
-
-            if (isIntelGPU)
-                log::warn("Intel GPU detected! Intel's OpenGL driver has bugs that can cause issues when using ImHex. If you experience any rendering bugs, please try the Mesa3D Software Renderer");
-        }
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.menu.edit.undo", ImGuiCustomCol_ToolbarBlue);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.menu.edit.redo", ImGuiCustomCol_ToolbarBlue);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.menu.file.create_file", ImGuiCustomCol_ToolbarGray);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.menu.file.open_file", ImGuiCustomCol_ToolbarBrown);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.file.save", ImGuiCustomCol_ToolbarBlue);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.file.save_as", ImGuiCustomCol_ToolbarBlue);
+        ContentRegistry::Interface::addMenuItemToToolbar("hex.builtin.menu.edit.bookmark.create", ImGuiCustomCol_ToolbarGreen);
     }
 
 }

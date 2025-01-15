@@ -2,7 +2,7 @@
 
 #include <hex/providers/provider.hpp>
 
-#include <IntervalTree.h>
+#include <wolv/container/interval_tree.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -11,7 +11,7 @@ namespace hex::plugin::builtin {
         IntelHexProvider() = default;
         ~IntelHexProvider() override = default;
 
-        [[nodiscard]] bool isAvailable() const override { return this->m_dataValid; }
+        [[nodiscard]] bool isAvailable() const override { return m_dataValid; }
         [[nodiscard]] bool isReadable() const override { return true; }
         [[nodiscard]] bool isWritable() const override { return false; }
         [[nodiscard]] bool isResizable() const override { return false; }
@@ -21,18 +21,18 @@ namespace hex::plugin::builtin {
 
         void readRaw(u64 offset, void *buffer, size_t size) override;
         void writeRaw(u64 offset, const void *buffer, size_t size) override;
-        [[nodiscard]] size_t getActualSize() const override;
+        [[nodiscard]] u64 getActualSize() const override;
 
         bool open() override;
         void close() override;
 
         [[nodiscard]] std::string getName() const override;
-        [[nodiscard]] std::vector<std::pair<std::string, std::string>> getDataInformation() const override { return { }; }
+        [[nodiscard]] std::vector<Description> getDataDescription() const override;
 
         void loadSettings(const nlohmann::json &settings) override;
         [[nodiscard]] nlohmann::json storeSettings(nlohmann::json settings) const override;
 
-        [[nodiscard]] std::string getTypeName() const override {
+        [[nodiscard]] UnlocalizedString getTypeName() const override {
             return "hex.builtin.provider.intel_hex";
         }
 
@@ -44,7 +44,7 @@ namespace hex::plugin::builtin {
     protected:
         bool m_dataValid = false;
         size_t m_dataSize = 0x00;
-        interval_tree::IntervalTree<u64, std::vector<u8>> m_data;
+        wolv::container::IntervalTree<std::vector<u8>> m_data;
 
         std::fs::path m_sourceFilePath;
     };

@@ -1,287 +1,237 @@
 #include "content/views/view_information.hpp"
 
 #include <hex/api/content_registry.hpp>
+#include <hex/api/achievement_manager.hpp>
+#include <hex/api/project_file_manager.hpp>
 
 #include <hex/providers/provider.hpp>
-#include <hex/providers/buffered_reader.hpp>
 
-#include <hex/helpers/fs.hpp>
 #include <hex/helpers/magic.hpp>
 
-#include <cstring>
-#include <cmath>
-#include <filesystem>
-#include <numeric>
-#include <span>
-
-#include <implot.h>
+#include <toasts/toast_notification.hpp>
 
 namespace hex::plugin::builtin {
 
     using namespace hex::literals;
 
-    ViewInformation::ViewInformation() : View("hex.builtin.view.information.name") {
-        EventManager::subscribe<EventDataChanged>(this, [this]() {
-            this->m_dataValid = false;
-            this->m_highestBlockEntropy = 0;
-            this->m_blockEntropy.clear();
-            this->m_averageEntropy = 0;
-            this->m_blockSize = 0;
-            this->m_valueCounts.fill(0x00);
-            this->m_dataMimeType.clear();
-            this->m_dataDescription.clear();
-            this->m_analyzedRegion  = { 0, 0 };
-        });
+    ViewInformation::ViewInformation() : View::Window("hex.builtin.view.information.name", ICON_VS_GRAPH_LINE) {
+        m_analysisData.setOnCreateCallback([](const prv::Provider *provider, AnalysisData &data) {
+            data.analyzedProvider = provider;
 
-        EventManager::subscribe<EventRegionSelected>(this, [this](Region region) {
-            if (this->m_blockSize != 0)
-                this->m_entropyHandlePosition = region.getStartAddress() / double(this->m_blockSize);
-        });
-
-        EventManager::subscribe<EventProviderDeleted>(this, [this](const auto*) {
-            this->m_dataValid = false;
-        });
-
-        ContentRegistry::FileHandler::add({ ".mgc" }, [](const auto &path) {
-            for (const auto &destPath : fs::getDefaultPaths(fs::ImHexPath::Magic)) {
-                if (fs::copyFile(path, destPath / path.filename(), std::fs::copy_options::overwrite_existing)) {
-                    View::showInfoPopup("hex.builtin.view.information.magic_db_added"_lang);
-                    return true;
-                }
+            data.informationSections.clear();
+            for (const auto &informationSectionConstructor : ContentRegistry::DataInformation::impl::getInformationSectionConstructors()) {
+                data.informationSections.push_back(informationSectionConstructor());
             }
-
-            return false;
         });
-    }
 
-    ViewInformation::~ViewInformation() {
-        EventManager::unsubscribe<EventDataChanged>(this);
-        EventManager::unsubscribe<EventRegionSelected>(this);
-        EventManager::unsubscribe<EventProviderDeleted>(this);
-    }
+        ProjectFile::registerPerProviderHandler({
+            .basePath = "data_information.json",
+            .required = false,
+            .load = [this](prv::Provider *provider, const std::fs::path &basePath, const Tar &tar) {
+                std::string save = tar.readString(basePath);
+                nlohmann::json input = nlohmann::json::parse(save);
 
-    static float calculateEntropy(std::array<ImU64, 256> &valueCounts, size_t blockSize) {
-        float entropy = 0;
+                for (const auto &section : m_analysisData.get(provider).informationSections) {
+                    if (!input.contains(section->getUnlocalizedName().get()))
+                        continue;
 
-        for (auto count : valueCounts) {
-            if (count == 0) continue;
+                    section->load(input[section->getUnlocalizedName().get()]);
+                }
 
-            float probability = static_cast<float>(count) / blockSize;
+                return true;
+            },
+            .store = [this](prv::Provider *provider, const std::fs::path &basePath, const Tar &tar) {
+                nlohmann::json output;
+                for (const auto &section : m_analysisData.get(provider).informationSections) {
+                    output[section->getUnlocalizedName().get()] = section->store();
+                }
 
-            entropy += probability * std::log2(probability);
-        }
+                tar.writeString(basePath, output.dump(4));
 
-        return (-entropy) / 8;    // log2(256) = 8
+                return true;
+            }
+        });
     }
 
     void ViewInformation::analyze() {
-        this->m_analyzerTask = TaskManager::createTask("hex.builtin.view.information.analyzing", 0, [this](auto &task) {
-            auto provider = ImHexApi::Provider::get();
+        AchievementManager::unlockAchievement("hex.builtin.achievement.misc", "hex.builtin.achievement.misc.analyze_file.name");
 
-            task.setMaxValue(provider->getActualSize());
+        auto provider = ImHexApi::Provider::get();
+        auto &analysis = m_analysisData.get(provider);
 
-            this->m_analyzedRegion = { provider->getBaseAddress(), provider->getBaseAddress() + provider->getSize() };
+        // Reset all sections
+        for (const auto &section : analysis.informationSections) {
+            section->reset();
+            section->markValid(false);
+        }
 
-            {
-                magic::compile();
+        // Run analyzers for each section
+        analysis.task = TaskManager::createTask("hex.builtin.view.information.analyzing"_lang, analysis.informationSections.size(), [provider, &analysis](Task &task) {
+            u32 progress = 0;
+            for (const auto &section : analysis.informationSections) {
+                // Only process the section if it is enabled
+                if (section->isEnabled()) {
+                    // Set the section as analyzing so a spinner can be drawn
+                    section->setAnalyzing(true);
+                    ON_SCOPE_EXIT { section->setAnalyzing(false); };
 
-                this->m_dataDescription = magic::getDescription(provider);
-                this->m_dataMimeType    = magic::getMIMEType(provider);
-            }
+                    try {
+                        // Process the section
+                        section->process(task, provider, analysis.analysisRegion);
 
-            this->m_dataValid = true;
-
-            {
-                this->m_blockSize = std::max<u32>(std::ceil(provider->getActualSize() / 2048.0F), 256);
-
-                std::array<ImU64, 256> blockValueCounts = { 0 };
-
-                this->m_blockEntropy.clear();
-                this->m_valueCounts.fill(0);
-
-                auto reader = prv::BufferedReader(provider);
-
-                u64 count = 0;
-                for (u8 byte : reader) {
-                    this->m_valueCounts[byte]++;
-                    blockValueCounts[byte]++;
-
-                    count++;
-                    if ((count % this->m_blockSize) == 0) [[unlikely]] {
-                        this->m_blockEntropy.push_back(calculateEntropy(blockValueCounts, this->m_blockSize));
-                        blockValueCounts = { 0 };
-                        task.update(count);
+                        // Mark the section as valid
+                        section->markValid();
+                    } catch (const std::exception &e) {
+                        // Show a toast with the error if the section failed to process
+                        ui::ToastError::open(hex::format("hex.builtin.view.information.error_processing_section"_lang, Lang(section->getUnlocalizedName()), e.what()));
                     }
                 }
 
-                this->m_averageEntropy = calculateEntropy(this->m_valueCounts, provider->getSize());
-                if (!this->m_blockEntropy.empty())
-                    this->m_highestBlockEntropy = *std::max_element(this->m_blockEntropy.begin(), this->m_blockEntropy.end());
-                else
-                    this->m_highestBlockEntropy = 0;
+                // Update the task progress
+                progress += 1;
+                task.update(progress);
             }
         });
-    }
+    }        
 
     void ViewInformation::drawContent() {
-        if (ImGui::Begin(View::toWindowName("hex.builtin.view.information.name").c_str(), &this->getWindowOpenState(), ImGuiWindowFlags_NoCollapse)) {
-            if (ImGui::BeginChild("##scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav)) {
+        if (ImGui::BeginChild("##scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav)) {
 
-                auto provider = ImHexApi::Provider::get();
-                if (ImHexApi::Provider::isValid() && provider->isReadable()) {
-                    ImGui::BeginDisabled(this->m_analyzerTask.isRunning());
-                    {
-                        if (ImGui::Button("hex.builtin.view.information.analyze"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
-                            this->analyze();
-                    }
-                    ImGui::EndDisabled();
+            auto provider = ImHexApi::Provider::get();
+            if (ImHexApi::Provider::isValid() && provider->isReadable()) {
+                auto &analysis = m_analysisData.get(provider);
 
-                    if (this->m_analyzerTask.isRunning()) {
-                        ImGui::TextSpinner("hex.builtin.view.information.analyzing"_lang);
-                    } else {
-                        ImGui::NewLine();
-                    }
+                // Draw settings window
+                ImGui::BeginDisabled(analysis.task.isRunning());
+                if (ImGuiExt::BeginSubWindow("hex.ui.common.settings"_lang)) {
+                    // Create a table so we can draw global settings on the left and section specific settings on the right
+                    if (ImGui::BeginTable("SettingsTable", 2, ImGuiTableFlags_BordersInner | ImGuiTableFlags_SizingStretchProp, ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+                        ImGui::TableSetupColumn("Left", ImGuiTableColumnFlags_WidthStretch, 0.3F);
+                        ImGui::TableSetupColumn("Right", ImGuiTableColumnFlags_WidthStretch, 0.7F);
 
-                    if (this->m_dataValid) {
+                        ImGui::TableNextRow();
 
-                        // Analyzed region
-                        ImGui::Header("hex.builtin.view.information.region"_lang, true);
+                        // Draw global settings
+                        ImGui::TableNextColumn();
+                        ui::regionSelectionPicker(&analysis.analysisRegion, provider, &analysis.selectionType, false);
 
-                        if (ImGui::BeginTable("information", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-                            ImGui::TableSetupColumn("type");
-                            ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+                        // Draw analyzed section names
+                        ImGui::TableNextColumn();
+                        if (ImGui::BeginTable("AnalyzedSections", 1, ImGuiTableFlags_BordersInnerH, ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeightWithSpacing() * 5))) {
+                            for (const auto &section : analysis.informationSections | std::views::reverse) {
+                                if (section->isEnabled() && (section->isValid() || section->isAnalyzing())) {
+                                    ImGui::TableNextRow();
+                                    ImGui::TableNextColumn();
 
-                            ImGui::TableNextRow();
+                                    ImGui::BeginDisabled();
+                                    {
+                                        ImGui::TextUnformatted(Lang(section->getUnlocalizedName()));
 
-                            for (auto &[name, value] : provider->getDataInformation()) {
-                                ImGui::TableNextColumn();
-                                ImGui::TextFormatted("{}", name);
-                                ImGui::TableNextColumn();
-                                ImGui::TextFormattedWrapped("{}", value);
+                                        if (section->isAnalyzing()) {
+                                            ImGui::SameLine();
+                                            ImGuiExt::TextSpinner("");
+                                        }
+                                    }
+                                    ImGui::EndDisabled();
+                                }
                             }
-
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{}", "hex.builtin.view.information.region"_lang);
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("0x{:X} - 0x{:X}", this->m_analyzedRegion.getStartAddress(), this->m_analyzedRegion.getEndAddress());
 
                             ImGui::EndTable();
                         }
 
+                        ImGui::EndTable();
+                    }
+                    ImGui::NewLine();
+
+                    // Draw the analyze button
+                    ImGui::SetCursorPosX(50_scaled);
+                    if (ImGuiExt::DimmedButton("hex.builtin.view.information.analyze"_lang, ImVec2(ImGui::GetContentRegionAvail().x - 50_scaled, 0)))
+                        this->analyze();
+
+                }
+                ImGuiExt::EndSubWindow();
+                ImGui::EndDisabled();
+
+                if (analysis.analyzedProvider != nullptr) {
+                    for (const auto &section : analysis.informationSections) {
+                        ImGui::TableNextColumn();
+                        ImGui::PushID(section.get());
+
+                        bool enabled = section->isEnabled();
+
+                        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0F);
+                        if (ImGui::BeginChild(Lang(section->getUnlocalizedName()), ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_MenuBar)) {
+                            if (ImGui::BeginMenuBar()) {
+
+                                // Draw the enable checkbox of the section
+                                // This is specifically split out so the checkbox does not get disabled when the section is disabled
+                                ImGui::BeginGroup();
+                                {
+                                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().FramePadding.y);
+                                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+                                    {
+                                        if (ImGui::Checkbox("##enabled", &enabled)) {
+                                            section->setEnabled(enabled);
+                                        }
+                                    }
+                                    ImGui::PopStyleVar();
+                                }
+                                ImGui::EndGroup();
+
+                                ImGui::SameLine();
+
+                                // Draw the rest of the section header
+                                ImGui::BeginDisabled(!enabled);
+                                {
+                                    ImGui::TextUnformatted(Lang(section->getUnlocalizedName()));
+                                    ImGui::SameLine();
+                                    if (auto description = section->getUnlocalizedDescription(); !description.empty()) {
+                                        ImGui::SameLine();
+                                        ImGuiExt::HelpHover(Lang(description), ICON_VS_INFO);
+                                    }
+
+                                    // Draw settings gear on the right
+                                    if (section->hasSettings()) {
+                                        ImGui::SameLine(0, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(ICON_VS_SETTINGS_GEAR).x);
+                                        if (ImGuiExt::DimmedIconButton(ICON_VS_SETTINGS_GEAR, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
+                                            ImGui::OpenPopup("SectionSettings");
+                                        }
+
+                                        if (ImGui::BeginPopup("SectionSettings")) {
+                                            ImGuiExt::Header("hex.ui.common.settings"_lang, true);
+                                            section->drawSettings();
+                                            ImGui::EndPopup();
+                                        }
+                                    }
+                                }
+                                ImGui::EndDisabled();
+
+                                ImGui::EndMenuBar();
+                            }
+
+                            // Draw the section content
+                            ImGui::BeginDisabled(!enabled);
+                            if (section->isEnabled()) {
+                                if (section->isValid())
+                                    section->drawContent();
+                                else if (section->isAnalyzing())
+                                    ImGuiExt::TextSpinner("hex.builtin.view.information.analyzing"_lang);
+                                else
+                                    ImGuiExt::TextFormattedCenteredHorizontal("hex.builtin.view.information.not_analyzed"_lang);
+                            }
+                            ImGui::EndDisabled();
+                        }
+                        ImGui::EndChild();
+                        ImGui::PopStyleVar();
+
+                        ImGui::PopID();
+
                         ImGui::NewLine();
-
-                        // Magic information
-                        if (!(this->m_dataDescription.empty() && this->m_dataMimeType.empty())) {
-                            ImGui::Header("hex.builtin.view.information.magic"_lang);
-
-                            if (ImGui::BeginTable("magic", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-                                ImGui::TableSetupColumn("type");
-                                ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
-
-                                ImGui::TableNextRow();
-
-                                if (!this->m_dataDescription.empty()) {
-                                    ImGui::TableNextColumn();
-                                    ImGui::TextUnformatted("hex.builtin.view.information.description"_lang);
-                                    ImGui::TableNextColumn();
-                                    ImGui::TextFormattedWrapped("{}", this->m_dataDescription.c_str());
-                                }
-
-                                if (!this->m_dataMimeType.empty()) {
-                                    ImGui::TableNextColumn();
-                                    ImGui::TextUnformatted("hex.builtin.view.information.mime"_lang);
-                                    ImGui::TableNextColumn();
-                                    ImGui::TextFormattedWrapped("{}", this->m_dataMimeType.c_str());
-                                }
-
-                                ImGui::EndTable();
-                            }
-                        }
-
-                        // Information analysis
-                        {
-
-                            ImGui::Header("hex.builtin.view.information.info_analysis"_lang);
-
-                            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetColorU32(ImGuiCol_WindowBg));
-                            ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImGui::GetColorU32(ImGuiCol_WindowBg));
-
-                            ImGui::TextUnformatted("hex.builtin.view.information.distribution"_lang);
-                            if (ImPlot::BeginPlot("##distribution", ImVec2(-1, 0), ImPlotFlags_NoChild | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
-                                ImPlot::SetupAxes("hex.builtin.common.value"_lang, "hex.builtin.common.count"_lang, ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock | ImPlotAxisFlags_LogScale);
-                                ImPlot::SetupAxesLimits(0, 256, 1, double(*std::max_element(this->m_valueCounts.begin(), this->m_valueCounts.end())) * 1.1F, ImGuiCond_Always);
-
-                                static auto x = [] {
-                                    std::array<ImU64, 256> result { 0 };
-                                    std::iota(result.begin(), result.end(), 0);
-                                    return result;
-                                }();
-
-                                ImPlot::PlotBars<ImU64>("##bytes", x.data(), this->m_valueCounts.data(), x.size(), 1.0);
-
-                                ImPlot::EndPlot();
-                            }
-
-                            ImGui::NewLine();
-
-                            ImGui::TextUnformatted("hex.builtin.view.information.entropy"_lang);
-
-                            if (ImPlot::BeginPlot("##entropy", ImVec2(-1, 0), ImPlotFlags_NoChild | ImPlotFlags_CanvasOnly)) {
-                                ImPlot::SetupAxes("hex.builtin.common.address"_lang, "hex.builtin.view.information.entropy"_lang, ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
-                                ImPlot::SetupAxesLimits(0, this->m_blockEntropy.size(), -0.1F, 1.1F, ImGuiCond_Always);
-
-                                ImPlot::PlotLine("##entropy_line", this->m_blockEntropy.data(), this->m_blockEntropy.size());
-
-                                if (ImPlot::DragLineX(1, &this->m_entropyHandlePosition, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
-                                    u64 address = u64(std::max<double>(this->m_entropyHandlePosition, 0) * this->m_blockSize) + provider->getBaseAddress();
-                                    address     = std::min(address, provider->getBaseAddress() + provider->getSize() - 1);
-                                    ImHexApi::HexEditor::setSelection(address, 1);
-                                }
-
-                                ImPlot::EndPlot();
-                            }
-
-                            ImPlot::PopStyleColor();
-                            ImGui::PopStyleColor();
-
-                            ImGui::NewLine();
-                        }
-
-                        // Entropy information
-                        if (ImGui::BeginTable("entropy", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-                            ImGui::TableSetupColumn("type");
-                            ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
-
-                            ImGui::TableNextRow();
-
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{}", "hex.builtin.view.information.block_size"_lang);
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("hex.builtin.view.information.block_size.desc"_lang, this->m_blockEntropy.size(), this->m_blockSize);
-
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{}", "hex.builtin.view.information.file_entropy"_lang);
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{:.8f}", this->m_averageEntropy);
-
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{}", "hex.builtin.view.information.highest_entropy"_lang);
-                            ImGui::TableNextColumn();
-                            ImGui::TextFormatted("{:.8f}", this->m_highestBlockEntropy);
-
-                            ImGui::EndTable();
-                        }
-
-                        if (this->m_averageEntropy > 0.83 && this->m_highestBlockEntropy > 0.9) {
-                            ImGui::NewLine();
-                            ImGui::TextFormattedColored(ImVec4(0.92F, 0.25F, 0.2F, 1.0F), "{}", "hex.builtin.view.information.encrypted"_lang);
-                        }
                     }
                 }
             }
-            ImGui::EndChild();
         }
-        ImGui::End();
+        ImGui::EndChild();
     }
 
 }
